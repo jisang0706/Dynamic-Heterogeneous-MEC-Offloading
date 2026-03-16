@@ -117,7 +117,7 @@ def run_smoke_rollout(config: ExperimentConfig) -> SmokeRunSummary:
                     server_obs=server_obs,
                     positions=torch.from_numpy(env.positions).float(),
                 )
-                last_value = float(critic(graph.node_features, graph.adjacency).mean().item())
+                last_value = float(critic(graph).mean().item())
             else:
                 last_value = float(critic(device_obs, server_obs).mean().item())
 

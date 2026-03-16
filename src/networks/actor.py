@@ -9,8 +9,9 @@ from src.utils import orthogonal_init
 class RoleConditionedActor(nn.Module):
     def __init__(self, obs_dim: int = 14, role_dim: int = 3, action_dim: int = 4, hidden_dim: int = 128) -> None:
         super().__init__()
-        self.fc1 = orthogonal_init(nn.Linear(obs_dim + role_dim, hidden_dim))
-        self.fc2 = orthogonal_init(nn.Linear(hidden_dim, hidden_dim))
+        tanh_gain = nn.init.calculate_gain("tanh")
+        self.fc1 = orthogonal_init(nn.Linear(obs_dim + role_dim, hidden_dim), gain=tanh_gain)
+        self.fc2 = orthogonal_init(nn.Linear(hidden_dim, hidden_dim), gain=tanh_gain)
         self.fc3 = orthogonal_init(nn.Linear(hidden_dim, action_dim), gain=0.01)
         self.tanh = nn.Tanh()
         self.log_std = nn.Parameter(torch.zeros(action_dim))
