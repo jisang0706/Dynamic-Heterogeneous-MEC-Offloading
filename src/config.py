@@ -30,11 +30,39 @@ class EnvironmentConfig:
     sigma_v: float = 0.5
     path_loss_exp: float = 3.76
     path_loss_kappa_linear: float = 10 ** (-128.1 / 10)
+    total_bandwidth_hz: float = 10e6
+    noise_density_dbm_hz: float = -174.0
     server_cpu_ghz: float = 25.0
     max_cpu_ghz: float = 3.0
     max_tx_power_mw: float = 300.0
+    task_size_range_mb: tuple[float, float] = (0.16, 1.6)
+    task_density_range_gcycles_per_mb: tuple[float, float] = (0.2, 2.0)
+    task_deadline_range_s: tuple[float, float] = (0.2, 1.0)
+    reward_timeout_penalty: float = 5000.0
+    reward_scale: float = 1000.0
+    delay_weight: float = 0.5
+    energy_weight: float = 0.5
+    local_energy_coeff_j_per_gcycle: float = 0.05
+    min_rate_bps: float = 1.0
+    queue_clip_max: float = 20.0
     observation_dim: int = 14
     central_observation_dim: int = 3
+
+    @property
+    def noise_density_w_hz(self) -> float:
+        return 10 ** ((self.noise_density_dbm_hz - 30.0) / 10.0)
+
+    @property
+    def max_task_work_gcycles(self) -> float:
+        return self.task_size_range_mb[1] * self.task_density_range_gcycles_per_mb[1]
+
+    @property
+    def local_energy_reference_j(self) -> float:
+        return self.local_energy_coeff_j_per_gcycle * self.max_task_work_gcycles
+
+    @property
+    def tx_energy_reference_j(self) -> float:
+        return (self.max_tx_power_mw / 1000.0) * self.dt
 
 
 @dataclass(slots=True)
