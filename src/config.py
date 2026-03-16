@@ -81,6 +81,7 @@ class ModelConfig:
 
 @dataclass(slots=True)
 class TrainingConfig:
+    run_mode: str = "smoke"
     learning_rate: float = 4e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -95,6 +96,9 @@ class TrainingConfig:
     smoke_steps: int = 8
     trajectory_window: int = 20
     trajectory_action_scale: float = 10.0
+    use_obs_scaling: bool = True
+    use_reward_scaling: bool = True
+    save_every_episodes: int = 100
 
 
 @dataclass(slots=True)
@@ -132,11 +136,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-l-i", type=_str_to_bool, default=True)
     parser.add_argument("--actor-type", choices=("shared", "individual"), default="shared")
     parser.add_argument("--role-dim", type=int, default=3)
+    parser.add_argument("--actor-hidden-dim", type=int, default=128)
 
     parser.add_argument("--learning-rate", type=float, default=4e-4)
+    parser.add_argument("--run-mode", choices=("smoke", "train"), default="smoke")
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument("--ppo-clip", type=float, default=0.1)
+    parser.add_argument("--entropy-coeff", type=float, default=0.01)
+    parser.add_argument("--l-i-coeff", type=float, default=1e-4)
+    parser.add_argument("--gradient-clip", type=float, default=2.0)
+    parser.add_argument("--update-every-episodes", type=int, default=4)
+    parser.add_argument("--ppo-epochs", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=800)
+    parser.add_argument("--total-episodes", type=int, default=4000)
     parser.add_argument("--smoke-steps", type=int, default=8)
     parser.add_argument("--trajectory-window", type=int, default=20)
     parser.add_argument("--trajectory-action-scale", type=float, default=10.0)
+    parser.add_argument("--use-obs-scaling", type=_str_to_bool, default=True)
+    parser.add_argument("--use-reward-scaling", type=_str_to_bool, default=True)
+    parser.add_argument("--save-every-episodes", type=int, default=100)
     return parser
 
 
@@ -156,12 +175,27 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         use_l_i=args.use_l_i,
         actor_type=args.actor_type,
         role_dim=args.role_dim,
+        actor_hidden_dim=args.actor_hidden_dim,
     )
     training = TrainingConfig(
+        run_mode=args.run_mode,
         learning_rate=args.learning_rate,
+        gamma=args.gamma,
+        gae_lambda=args.gae_lambda,
+        ppo_clip=args.ppo_clip,
+        entropy_coeff=args.entropy_coeff,
+        l_i_coeff=args.l_i_coeff,
+        gradient_clip=args.gradient_clip,
+        update_every_episodes=args.update_every_episodes,
+        ppo_epochs=args.ppo_epochs,
+        batch_size=args.batch_size,
+        total_episodes=args.total_episodes,
         smoke_steps=args.smoke_steps,
         trajectory_window=args.trajectory_window,
         trajectory_action_scale=args.trajectory_action_scale,
+        use_obs_scaling=args.use_obs_scaling,
+        use_reward_scaling=args.use_reward_scaling,
+        save_every_episodes=args.save_every_episodes,
     )
     return ExperimentConfig(
         seed=args.seed,

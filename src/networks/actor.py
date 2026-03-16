@@ -75,3 +75,109 @@ class RoleConditionedActor(nn.Module):
         entropy = distribution.entropy().sum(dim=-1)
         mean, std = distribution.mean, distribution.stddev
         return log_prob, entropy, mean, std
+
+
+class MultiAgentRoleConditionedActor(nn.Module):
+    def __init__(
+        self,
+        num_agents: int,
+        actor_type: str = "shared",
+        obs_dim: int = 14,
+        role_dim: int = 3,
+        action_dim: int = 4,
+        hidden_dim: int = 128,
+        use_role: bool = True,
+    ) -> None:
+        super().__init__()
+        if actor_type not in {"shared", "individual"}:
+            raise ValueError(f"Unsupported actor_type: {actor_type}")
+        self.num_agents = num_agents
+        self.actor_type = actor_type
+        self.use_role = use_role
+        self.obs_dim = obs_dim
+        self.role_dim = role_dim
+        self.action_dim = action_dim
+
+        if actor_type == "shared":
+            self.shared_actor = RoleConditionedActor(
+                obs_dim=obs_dim,
+                role_dim=role_dim,
+                action_dim=action_dim,
+                hidden_dim=hidden_dim,
+                use_role=use_role,
+            )
+            self.actors = None
+        else:
+            self.shared_actor = None
+            self.actors = nn.ModuleList(
+                [
+                    RoleConditionedActor(
+                        obs_dim=obs_dim,
+                        role_dim=role_dim,
+                        action_dim=action_dim,
+                        hidden_dim=hidden_dim,
+                        use_role=use_role,
+                    )
+                    for _ in range(num_agents)
+                ]
+            )
+
+    def forward(self, obs: torch.Tensor, role_mu: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.actor_type == "shared":
+            assert self.shared_actor is not None
+            return self.shared_actor(obs, role_mu)
+
+        squeeze_batch = False
+        if obs.dim() == 2:
+            obs = obs.unsqueeze(0)
+            squeeze_batch = True
+        if self.use_role and role_mu is None:
+            raise ValueError("role_mu must be provided when use_role=True.")
+        if self.use_role and role_mu.dim() == 2:
+            role_mu = role_mu.unsqueeze(0)
+        if obs.shape[1] != self.num_agents:
+            raise ValueError(f"obs second dimension must match num_agents={self.num_agents}")
+
+        means: list[torch.Tensor] = []
+        stds: list[torch.Tensor] = []
+        assert self.actors is not None
+        for agent_idx, actor in enumerate(self.actors):
+            agent_role = None if role_mu is None else role_mu[:, agent_idx]
+            mean, std = actor(obs[:, agent_idx], agent_role)
+            means.append(mean)
+            stds.append(std)
+        stacked_mean = torch.stack(means, dim=1)
+        stacked_std = torch.stack(stds, dim=1)
+        if squeeze_batch:
+            stacked_mean = stacked_mean.squeeze(0)
+            stacked_std = stacked_std.squeeze(0)
+        return stacked_mean, stacked_std
+
+    def distribution(self, obs: torch.Tensor, role_mu: torch.Tensor | None = None) -> Normal:
+        mean, std = self.forward(obs, role_mu)
+        return Normal(mean, std)
+
+    def action_to_env(self, action: torch.Tensor) -> torch.Tensor:
+        return action / 10.0
+
+    def sample_action(
+        self,
+        obs: torch.Tensor,
+        role_mu: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        distribution = self.distribution(obs, role_mu)
+        action = torch.clamp(distribution.sample(), 0.0, 10.0)
+        log_prob = distribution.log_prob(action).sum(dim=-1)
+        env_action = self.action_to_env(action)
+        return action, env_action, log_prob
+
+    def evaluate_actions(
+        self,
+        obs: torch.Tensor,
+        action: torch.Tensor,
+        role_mu: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        distribution = self.distribution(obs, role_mu)
+        log_prob = distribution.log_prob(action).sum(dim=-1)
+        entropy = distribution.entropy().sum(dim=-1)
+        return log_prob, entropy, distribution.mean, distribution.stddev

@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import unittest
+
+import numpy as np
+import torch
+
+from src.buffer import RolloutBuffer, Transition
+from src.config import EnvironmentConfig, ExperimentConfig, ModelConfig, TrainingConfig
+from src.networks import MultiAgentRoleConditionedActor
+from src.train import PPOTrainer
+from src.utils import ObservationScaler, RewardScaler, compute_gae
+
+
+class Task6TrainingPipelineTests(unittest.TestCase):
+    def test_compute_gae_resets_across_done_boundaries(self) -> None:
+        rewards = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+        values = torch.zeros(3, dtype=torch.float32)
+        dones = torch.tensor([0.0, 1.0, 1.0], dtype=torch.float32)
+
+        advantages, returns = compute_gae(
+            rewards=rewards,
+            values=values,
+            dones=dones,
+            gamma=1.0,
+            gae_lambda=1.0,
+            last_value=0.0,
+            normalize_advantages=False,
+        )
+
+        expected = torch.tensor([3.0, 2.0, 3.0], dtype=torch.float32)
+        self.assertTrue(torch.allclose(advantages, expected))
+        self.assertTrue(torch.allclose(returns, expected))
+
+    def test_multi_agent_actor_supports_shared_and_individual_modes(self) -> None:
+        obs = torch.randn(4, 5, 14)
+        role_mu = torch.randn(4, 5, 3)
+
+        shared_actor = MultiAgentRoleConditionedActor(
+            num_agents=5,
+            actor_type="shared",
+            obs_dim=14,
+            role_dim=3,
+            action_dim=4,
+            hidden_dim=64,
+            use_role=True,
+        )
+        individual_actor = MultiAgentRoleConditionedActor(
+            num_agents=5,
+            actor_type="individual",
+            obs_dim=14,
+            role_dim=3,
+            action_dim=4,
+            hidden_dim=64,
+            use_role=True,
+        )
+
+        shared_mean, shared_std = shared_actor(obs, role_mu)
+        individual_mean, individual_std = individual_actor(obs, role_mu)
+
+        self.assertEqual(tuple(shared_mean.shape), (4, 5, 4))
+        self.assertEqual(tuple(shared_std.shape), (4, 5, 4))
+        self.assertEqual(tuple(individual_mean.shape), (4, 5, 4))
+        self.assertEqual(tuple(individual_std.shape), (4, 5, 4))
+
+    def test_rollout_buffer_computes_joint_returns_from_stored_transitions(self) -> None:
+        buffer = RolloutBuffer()
+        for reward_value, done in ((1.0, False), (2.0, True)):
+            reward = np.full(2, reward_value, dtype=np.float32)
+            buffer.add(
+                Transition(
+                    device_obs=np.zeros((2, 14), dtype=np.float32),
+                    server_obs=np.zeros(3, dtype=np.float32),
+                    role_mu=np.zeros((2, 3), dtype=np.float32),
+                    action=np.zeros((2, 4), dtype=np.float32),
+                    log_prob=np.zeros(2, dtype=np.float32),
+                    reward=reward,
+                    done=done,
+                    value=0.0,
+                )
+            )
+
+        gae_batch = buffer.compute_returns_and_advantages(
+            gamma=1.0,
+            gae_lambda=1.0,
+            last_value=0.0,
+            normalize_advantages=False,
+        )
+
+        expected_joint_returns = torch.tensor([6.0, 4.0], dtype=torch.float32)
+        self.assertTrue(torch.allclose(gae_batch["return"], expected_joint_returns))
+
+    def test_observation_and_reward_scalers_produce_finite_outputs(self) -> None:
+        obs_scaler = ObservationScaler(shape=(3,))
+        reward_scaler = RewardScaler(gamma=0.99)
+
+        scaled_obs = obs_scaler.update_and_transform(np.asarray([[1.0, 2.0, 3.0]], dtype=np.float32))
+        scaled_reward = reward_scaler.scale(5.0)
+
+        self.assertEqual(scaled_obs.shape, (1, 3))
+        self.assertTrue(np.isfinite(scaled_obs).all())
+        self.assertTrue(np.isfinite(scaled_reward))
+
+    def test_collect_rollouts_respects_global_max_step_budget(self) -> None:
+        config = ExperimentConfig(
+            seed=11,
+            environment=EnvironmentConfig(num_agents=5, episode_length=2, graph_type="star"),
+            model=ModelConfig(critic_type="mlp", use_role=False, use_l_i=False, actor_type="shared"),
+            training=TrainingConfig(run_mode="train", total_episodes=2, update_every_episodes=2),
+        )
+        trainer = PPOTrainer(config)
+
+        buffer, last_value, episode_rewards = trainer.collect_rollouts(num_episodes=2, max_steps=3)
+
+        self.assertEqual(len(buffer), 3)
+        self.assertEqual(len(episode_rewards), 2)
+        self.assertTrue(np.isfinite(last_value))
+
+    def test_tiny_ppo_update_produces_finite_losses(self) -> None:
+        config = ExperimentConfig(
+            seed=7,
+            environment=EnvironmentConfig(
+                num_agents=5,
+                episode_length=4,
+                graph_type="star",
+            ),
+            model=ModelConfig(
+                critic_type="mlp",
+                use_role=True,
+                use_l_i=True,
+                actor_type="shared",
+                role_dim=3,
+                action_dim=4,
+            ),
+            training=TrainingConfig(
+                run_mode="train",
+                learning_rate=4e-4,
+                gamma=0.99,
+                gae_lambda=0.95,
+                ppo_clip=0.1,
+                entropy_coeff=0.01,
+                l_i_coeff=1e-4,
+                gradient_clip=2.0,
+                update_every_episodes=1,
+                ppo_epochs=1,
+                batch_size=2,
+                total_episodes=1,
+                smoke_steps=2,
+                trajectory_window=2,
+                trajectory_action_scale=10.0,
+            ),
+        )
+        trainer = PPOTrainer(config)
+
+        buffer, last_value, episode_rewards = trainer.collect_rollouts(num_episodes=1, max_steps=2)
+        update = trainer.update(buffer, last_value=last_value)
+
+        self.assertEqual(len(episode_rewards), 1)
+        self.assertGreater(update.steps, 0)
+        self.assertTrue(np.isfinite(update.actor_loss))
+        self.assertTrue(np.isfinite(update.critic_loss))
+        self.assertTrue(np.isfinite(update.entropy))
+        self.assertTrue(update.l_i_loss is None or np.isfinite(update.l_i_loss))
+
+
+if __name__ == "__main__":
+    unittest.main()
