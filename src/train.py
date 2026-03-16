@@ -87,23 +87,28 @@ def run_smoke_rollout(config: ExperimentConfig) -> SmokeRunSummary:
         graph_type=config.environment.graph_type,
         distance_threshold_m=config.environment.distance_threshold_m,
     )
-    role_encoder = RoleEncoder(
-        obs_dim=config.environment.observation_dim,
-        role_dim=config.model.role_dim,
-        hidden_dim=config.model.role_hidden_dim,
-    )
+    role_encoder = None
+    if config.model.use_role:
+        role_encoder = RoleEncoder(
+            obs_dim=config.environment.observation_dim,
+            role_dim=config.model.role_dim,
+            hidden_dim=config.model.role_hidden_dim,
+        )
     actor = RoleConditionedActor(
         obs_dim=config.environment.observation_dim,
         role_dim=config.model.role_dim,
         action_dim=config.model.action_dim,
         hidden_dim=config.model.actor_hidden_dim,
+        use_role=config.model.use_role,
     )
-    trajectory_encoder = TrajectoryEncoder(
-        obs_dim=config.environment.observation_dim,
-        action_dim=config.model.action_dim,
-        role_dim=config.model.role_dim,
-        hidden_dim=config.model.trajectory_hidden_dim,
-    )
+    trajectory_encoder = None
+    if config.model.use_role:
+        trajectory_encoder = TrajectoryEncoder(
+            obs_dim=config.environment.observation_dim,
+            action_dim=config.model.action_dim,
+            role_dim=config.model.role_dim,
+            hidden_dim=config.model.trajectory_hidden_dim,
+        )
     critic = build_critic(config, components)
     buffer = RolloutBuffer()
 
@@ -116,12 +121,17 @@ def run_smoke_rollout(config: ExperimentConfig) -> SmokeRunSummary:
         server_obs = torch.from_numpy(observation.server_obs).float()
 
         with torch.no_grad():
-            role_mu, _ = role_encoder(device_obs)
-            mean, std = actor(device_obs, role_mu)
-            distribution = torch.distributions.Normal(mean, std)
-            sampled_action = torch.clamp(distribution.sample(), 0.0, 10.0)
-            env_action = sampled_action / 10.0
-            log_prob = distribution.log_prob(sampled_action).sum(dim=-1)
+            if role_encoder is None:
+                role_mu = torch.zeros(
+                    device_obs.shape[0],
+                    config.model.role_dim,
+                    dtype=device_obs.dtype,
+                    device=device_obs.device,
+                )
+                sampled_action, env_action, log_prob = actor.sample_action(device_obs)
+            else:
+                role_mu, _ = role_encoder(device_obs)
+                sampled_action, env_action, log_prob = actor.sample_action(device_obs, role_mu)
 
             if config.model.critic_type == "pgcn":
                 graph = graph_builder.build(
@@ -149,7 +159,7 @@ def run_smoke_rollout(config: ExperimentConfig) -> SmokeRunSummary:
         if done:
             break
 
-    if config.model.use_l_i and len(buffer) > 0:
+    if config.model.use_role and config.model.use_l_i and len(buffer) > 0:
         with torch.no_grad():
             trajectory_batch = buffer.build_agent_trajectory_batch(
                 window_size=config.training.trajectory_window,
@@ -158,6 +168,8 @@ def run_smoke_rollout(config: ExperimentConfig) -> SmokeRunSummary:
                 action_scale=config.training.trajectory_action_scale,
                 device="cpu",
             )
+            assert role_encoder is not None
+            assert trajectory_encoder is not None
             role_mu_batch, role_sigma_batch = role_encoder(trajectory_batch["current_obs"])
             traj_mu_batch, traj_sigma_batch = trajectory_encoder(
                 trajectory_batch["trajectory"],
