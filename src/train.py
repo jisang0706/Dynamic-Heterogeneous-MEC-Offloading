@@ -55,7 +55,7 @@ def _load_training_components() -> dict[str, Any]:
 
     from src.buffer import RolloutBuffer, Transition
     from src.environment import DynamicMECEnv
-    from src.modules import GraphBuilder, RoleEncoder, TrajectoryEncoder, role_identifiability_loss, to_pyg_batch
+    from src.modules import GraphBuilder, RoleEncoder, TrajectoryEncoder, role_diversity_loss, role_identifiability_loss, to_pyg_batch
     from src.networks import MLPCritic, MultiAgentRoleConditionedActor, PGCNCritic, SetCritic
     from src.utils import ObservationScaler, RewardScaler, set_seed
 
@@ -69,6 +69,7 @@ def _load_training_components() -> dict[str, Any]:
         "GraphBuilder": GraphBuilder,
         "RoleEncoder": RoleEncoder,
         "TrajectoryEncoder": TrajectoryEncoder,
+        "role_diversity_loss": role_diversity_loss,
         "MLPCritic": MLPCritic,
         "MultiAgentRoleConditionedActor": MultiAgentRoleConditionedActor,
         "PGCNCritic": PGCNCritic,
@@ -146,6 +147,7 @@ class PPOTrainer:
             use_role=config.model.use_role,
         ).to(self.device)
         self.critic = build_critic(config, self.components).to(self.device)
+        self.role_diversity_loss = self.components["role_diversity_loss"]
         self.role_identifiability_loss = self.components["role_identifiability_loss"]
 
         actor_modules = [self.actor]
@@ -467,11 +469,16 @@ class PPOTrainer:
                     if computed_l_i is not None:
                         l_i_loss = computed_l_i
                         l_i_losses.append(float(l_i_loss.item()))
+                l_d_loss = device_obs.new_tensor(0.0)
+                if self.config.model.use_role and self.config.model.use_l_d_simple:
+                    flat_role_mu = role_mu.reshape(-1, role_mu.shape[-1])
+                    l_d_loss = self.role_diversity_loss(flat_role_mu)
 
                 actor_loss = (
                     policy_loss
                     - self.config.training.entropy_coeff * entropy_bonus
                     + self.config.training.l_i_coeff * l_i_loss
+                    + self.config.training.l_d_coeff * l_d_loss
                 )
                 self.actor_optimizer.zero_grad()
                 actor_loss.backward()
@@ -574,13 +581,113 @@ class PPOTrainer:
 
 
 def run_smoke_rollout(config: ExperimentConfig) -> SmokeRunSummary:
-    trainer = PPOTrainer(config)
-    return trainer.run_smoke_rollout()
+    from src.baselines import (
+        DeterministicContextTrainer,
+        IPPOTrainer,
+        apply_experiment_variant,
+        build_li_original_command,
+        li_original_available,
+        li_original_missing_files,
+        run_fixed_policy_baseline,
+        run_maddpg_baseline,
+    )
+
+    resolved_config, variant = apply_experiment_variant(config, config.training.variant_id)
+    if variant is None or variant.runner_kind == "ppo":
+        trainer = PPOTrainer(resolved_config)
+        return trainer.run_smoke_rollout()
+    if variant.runner_kind == "det_context":
+        trainer = DeterministicContextTrainer(resolved_config)
+        return trainer.run_smoke_rollout()
+    if variant.runner_kind == "ippo":
+        trainer = IPPOTrainer(resolved_config)
+        summary = trainer.run_smoke_rollout()
+        return SmokeRunSummary(
+            steps=summary.steps,
+            mean_reward=summary.mean_reward,
+            mean_joint_reward=summary.mean_joint_reward,
+            last_value=summary.last_value,
+            critic_type=summary.critic_type,
+            last_l_i_loss=summary.last_l_i_loss,
+        )
+    if variant.runner_kind == "fixed":
+        fixed_summary = run_fixed_policy_baseline(resolved_config, variant.variant_id, num_episodes=1)
+        return SmokeRunSummary(
+            steps=resolved_config.environment.episode_length,
+            mean_reward=fixed_summary.mean_step_device_reward,
+            mean_joint_reward=fixed_summary.mean_step_joint_reward,
+            last_value=0.0,
+            critic_type=variant.variant_id.lower(),
+            last_l_i_loss=None,
+        )
+    if variant.runner_kind == "external":
+        if not li_original_available():
+            missing = ", ".join(str(path) for path in li_original_missing_files())
+            raise SystemExit(f"B0 requires the original li_code repository files. Missing: {missing}")
+        command = " ".join(build_li_original_command())
+        raise SystemExit(f"B0 should be run through the original Li code path: {command}")
+    run_maddpg_baseline()
+    raise SystemExit("Unreachable baseline branch.")
 
 
 def run_training(config: ExperimentConfig) -> TrainingRunSummary:
-    trainer = PPOTrainer(config)
-    return trainer.train()
+    from src.baselines import (
+        DeterministicContextTrainer,
+        IPPOTrainer,
+        apply_experiment_variant,
+        build_li_original_command,
+        li_original_available,
+        li_original_missing_files,
+        run_fixed_policy_baseline,
+        run_maddpg_baseline,
+    )
+
+    resolved_config, variant = apply_experiment_variant(config, config.training.variant_id)
+    if variant is None or variant.runner_kind == "ppo":
+        trainer = PPOTrainer(resolved_config)
+        return trainer.train()
+    if variant.runner_kind == "det_context":
+        trainer = DeterministicContextTrainer(resolved_config)
+        return trainer.train()
+    if variant.runner_kind == "ippo":
+        trainer = IPPOTrainer(resolved_config)
+        summary = trainer.train()
+        return TrainingRunSummary(
+            episodes=summary.episodes,
+            updates=summary.updates,
+            mean_episode_joint_reward=summary.mean_episode_joint_reward,
+            critic_type=summary.critic_type,
+            episode_log_path=summary.episode_log_path,
+            update_log_path=summary.update_log_path,
+            last_checkpoint_path=summary.last_checkpoint_path,
+            last_actor_loss=summary.last_actor_loss,
+            last_critic_loss=summary.last_critic_loss,
+            last_entropy=summary.last_entropy,
+            last_l_i_loss=summary.last_l_i_loss,
+        )
+    if variant.runner_kind == "fixed":
+        fixed_summary = run_fixed_policy_baseline(resolved_config, variant.variant_id)
+        return TrainingRunSummary(
+            episodes=fixed_summary.episodes,
+            updates=0,
+            mean_episode_joint_reward=fixed_summary.mean_episode_joint_reward,
+            critic_type=variant.variant_id.lower(),
+            episode_log_path=None,
+            update_log_path=None,
+            last_checkpoint_path=None,
+            last_actor_loss=None,
+            last_critic_loss=None,
+            last_entropy=None,
+            last_l_i_loss=None,
+        )
+    if variant.runner_kind == "external":
+        if not li_original_available():
+            missing = ", ".join(str(path) for path in li_original_missing_files())
+            raise SystemExit(f"B0 requires the original li_code repository files. Missing: {missing}")
+        command = " ".join(build_li_original_command())
+        raise SystemExit(f"B0 should be run through the original Li code path: {command}")
+    run_maddpg_baseline()
+    raise SystemExit("Unreachable baseline branch.")
 
 
 def main() -> None:
