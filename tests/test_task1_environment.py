@@ -29,12 +29,13 @@ class Task1EnvironmentTests(unittest.TestCase):
         env.reset()
 
         prev_distances = env.distances_m.copy()
-        prev_channels = env.channel_gains.copy()
+        prev_channel_ratios = env.channel_gain_ratios.copy()
         action = np.full((config.num_agents, config.num_tasks_per_step + 1), 0.5, dtype=np.float32)
         env.step(action)
 
         self.assertFalse(np.allclose(prev_distances, env.distances_m))
-        self.assertFalse(np.allclose(prev_channels, env.channel_gains))
+        # Raw channel gains are around 1e-10, so default allclose tolerances are too loose.
+        self.assertFalse(np.allclose(prev_channel_ratios, env.channel_gain_ratios))
         self.assertTrue(np.all(env.distances_m >= config.min_distance_m))
         self.assertTrue(np.all(env.distances_m <= config.max_distance_m))
 
