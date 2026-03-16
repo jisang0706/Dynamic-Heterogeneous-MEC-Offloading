@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import unittest
 
+import torch
+
 from src.baselines import (
     DeterministicContextTrainer,
+    DeterministicContextEncoder,
     IPPOTrainer,
     apply_experiment_variant,
     li_original_available,
@@ -59,6 +62,14 @@ class Task7BaselineTests(unittest.TestCase):
 
         self.assertEqual(summary.steps, 2)
         self.assertEqual(summary.critic_type, "pgcn")
+
+    def test_deterministic_context_encoder_matches_role_encoder_interface(self) -> None:
+        encoder = DeterministicContextEncoder(obs_dim=14, context_dim=3, hidden_dim=12)
+
+        context, sigma = encoder(torch.zeros(5, 14))
+
+        self.assertEqual(tuple(context.shape), (5, 3))
+        self.assertIsNone(sigma)
 
     def test_ippo_trainer_runs_smoke_rollout(self) -> None:
         config = ExperimentConfig(

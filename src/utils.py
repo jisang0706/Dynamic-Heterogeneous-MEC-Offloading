@@ -77,6 +77,11 @@ class RunningMeanStd:
             "count": self.count,
         }
 
+    def load_state_dict(self, state: dict[str, np.ndarray | float]) -> None:
+        self.mean = np.asarray(state["mean"], dtype=np.float64).copy()
+        self.var = np.asarray(state["var"], dtype=np.float64).copy()
+        self.count = float(state["count"])
+
 
 class ObservationScaler:
     def __init__(self, shape: tuple[int, ...], clip_range: float = 5.0, epsilon: float = 1e-8) -> None:
@@ -103,6 +108,11 @@ class ObservationScaler:
             "epsilon": self.epsilon,
         }
 
+    def load_state_dict(self, state: dict[str, np.ndarray | float]) -> None:
+        self.clip_range = float(state["clip_range"])
+        self.epsilon = float(state["epsilon"])
+        self.rms.load_state_dict(state["rms"])
+
 
 class RewardScaler:
     def __init__(self, gamma: float = 0.99, epsilon: float = 1e-8) -> None:
@@ -128,6 +138,12 @@ class RewardScaler:
             "running_return": self.running_return,
             "return_rms": self.return_rms.state_dict(),
         }
+
+    def load_state_dict(self, state: dict[str, float | dict[str, np.ndarray | float]]) -> None:
+        self.gamma = float(state["gamma"])
+        self.epsilon = float(state["epsilon"])
+        self.running_return = float(state["running_return"])
+        self.return_rms.load_state_dict(state["return_rms"])
 
 
 def compute_gae(

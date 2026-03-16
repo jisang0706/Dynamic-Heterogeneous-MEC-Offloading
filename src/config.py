@@ -213,3 +213,24 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         model=model,
         training=training,
     )
+
+
+def build_config_from_dict(payload: dict[str, Any]) -> ExperimentConfig:
+    environment_payload = dict(payload.get("environment", {}))
+    model_payload = dict(payload.get("model", {}))
+    training_payload = dict(payload.get("training", {}))
+
+    for key in ("task_size_range_mb", "task_density_range_gcycles_per_mb", "task_deadline_range_s"):
+        if key in environment_payload:
+            environment_payload[key] = tuple(environment_payload[key])
+
+    environment = EnvironmentConfig(**environment_payload)
+    model = ModelConfig(**model_payload)
+    training = TrainingConfig(**training_payload)
+    return ExperimentConfig(
+        seed=int(payload.get("seed", 42)),
+        output_root=Path(payload.get("output_root", ".")),
+        environment=environment,
+        model=model,
+        training=training,
+    )

@@ -23,10 +23,11 @@ class DeterministicContextEncoder(nn.Module):
         self.fc1 = orthogonal_init(nn.Linear(obs_dim, hidden_dim), gain=nn.init.calculate_gain("relu"))
         self.fc_context = orthogonal_init(nn.Linear(hidden_dim, context_dim), gain=1.0)
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, None]:
         if obs.dim() == 1:
             obs = obs.unsqueeze(0)
-        return self.fc_context(F.relu(self.fc1(obs)))
+        context = self.fc_context(F.relu(self.fc1(obs)))
+        return context, None
 
 
 class DeterministicContextTrainer(PPOTrainer):
@@ -49,6 +50,6 @@ class DeterministicContextTrainer(PPOTrainer):
 
     def _actor_role_posterior(self, device_obs):
         flat_obs = device_obs.reshape(-1, device_obs.shape[-1])
-        context = self.context_encoder(flat_obs)
+        context, _ = self.context_encoder(flat_obs)
         context_shape = (*device_obs.shape[:-1], self.config.model.role_dim)
         return context.reshape(context_shape), None
