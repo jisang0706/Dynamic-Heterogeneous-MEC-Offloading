@@ -250,8 +250,15 @@ def _load_trainer_checkpoint(trainer: Any, checkpoint: dict[str, Any], runner_ki
         trainer.server_obs_scaler.load_state_dict(checkpoint["server_obs_scaler"])
 
 
+def _torch_load_checkpoint(checkpoint_path: Path) -> dict[str, Any]:
+    try:
+        return torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    except TypeError:
+        return torch.load(checkpoint_path, map_location="cpu")
+
+
 def _load_checkpoint_policy(checkpoint_path: Path) -> LoadedPolicy:
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = _torch_load_checkpoint(checkpoint_path)
     base_config = build_config_from_dict(checkpoint["config"])
     resolved_config, variant = apply_experiment_variant(base_config, base_config.training.variant_id)
     eval_config = _build_eval_config(resolved_config)
