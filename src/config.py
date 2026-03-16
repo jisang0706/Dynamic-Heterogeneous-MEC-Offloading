@@ -93,6 +93,8 @@ class TrainingConfig:
     batch_size: int = 800
     total_episodes: int = 4000
     smoke_steps: int = 8
+    trajectory_window: int = 20
+    trajectory_action_scale: float = 10.0
 
 
 @dataclass(slots=True)
@@ -133,6 +135,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--learning-rate", type=float, default=4e-4)
     parser.add_argument("--smoke-steps", type=int, default=8)
+    parser.add_argument("--trajectory-window", type=int, default=20)
+    parser.add_argument("--trajectory-action-scale", type=float, default=10.0)
     return parser
 
 
@@ -156,6 +160,8 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
     training = TrainingConfig(
         learning_rate=args.learning_rate,
         smoke_steps=args.smoke_steps,
+        trajectory_window=args.trajectory_window,
+        trajectory_action_scale=args.trajectory_action_scale,
     )
     return ExperimentConfig(
         seed=args.seed,

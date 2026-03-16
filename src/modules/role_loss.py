@@ -23,3 +23,15 @@ def role_identifiability_loss(
     traj_std: torch.Tensor,
 ) -> torch.Tensor:
     return diagonal_gaussian_kl(role_mu, role_std, traj_mu, traj_std).mean()
+
+
+def role_diversity_loss(role_mu: torch.Tensor) -> torch.Tensor:
+    if role_mu.dim() < 2:
+        raise ValueError("role_mu must have at least two dimensions.")
+    if role_mu.shape[0] < 2:
+        return role_mu.new_tensor(0.0)
+    pairwise_sq_dist = torch.cdist(role_mu, role_mu, p=2).pow(2)
+    mask = ~torch.eye(role_mu.shape[0], dtype=torch.bool, device=role_mu.device)
+    if not mask.any():
+        return role_mu.new_tensor(0.0)
+    return -pairwise_sq_dist[mask].mean()

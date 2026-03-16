@@ -12,6 +12,7 @@ class SmokeRunSummary:
     mean_reward: float
     last_value: float
     critic_type: str
+    last_l_i_loss: float | None = None
 
 
 def _load_training_components() -> dict[str, Any]:
@@ -25,7 +26,7 @@ def _load_training_components() -> dict[str, Any]:
 
     from src.buffer import RolloutBuffer, Transition
     from src.environment import DynamicMECEnv
-    from src.modules import GraphBuilder, RoleEncoder
+    from src.modules import GraphBuilder, RoleEncoder, TrajectoryEncoder, role_identifiability_loss
     from src.networks import MLPCritic, PGCNCritic, RoleConditionedActor, SetCritic
     from src.utils import set_seed
 
@@ -36,10 +37,12 @@ def _load_training_components() -> dict[str, Any]:
         "DynamicMECEnv": DynamicMECEnv,
         "GraphBuilder": GraphBuilder,
         "RoleEncoder": RoleEncoder,
+        "TrajectoryEncoder": TrajectoryEncoder,
         "MLPCritic": MLPCritic,
         "PGCNCritic": PGCNCritic,
         "RoleConditionedActor": RoleConditionedActor,
         "SetCritic": SetCritic,
+        "role_identifiability_loss": role_identifiability_loss,
         "set_seed": set_seed,
     }
 
@@ -69,9 +72,11 @@ def run_smoke_rollout(config: ExperimentConfig) -> SmokeRunSummary:
     DynamicMECEnv = components["DynamicMECEnv"]
     GraphBuilder = components["GraphBuilder"]
     RoleEncoder = components["RoleEncoder"]
+    TrajectoryEncoder = components["TrajectoryEncoder"]
     RoleConditionedActor = components["RoleConditionedActor"]
     RolloutBuffer = components["RolloutBuffer"]
     Transition = components["Transition"]
+    role_identifiability_loss = components["role_identifiability_loss"]
 
     set_seed(config.seed)
     config.ensure_output_dirs()
@@ -93,11 +98,18 @@ def run_smoke_rollout(config: ExperimentConfig) -> SmokeRunSummary:
         action_dim=config.model.action_dim,
         hidden_dim=config.model.actor_hidden_dim,
     )
+    trajectory_encoder = TrajectoryEncoder(
+        obs_dim=config.environment.observation_dim,
+        action_dim=config.model.action_dim,
+        role_dim=config.model.role_dim,
+        hidden_dim=config.model.trajectory_hidden_dim,
+    )
     critic = build_critic(config, components)
     buffer = RolloutBuffer()
 
     observation = env.reset()
     last_value = 0.0
+    last_l_i_loss: float | None = None
 
     for _ in range(min(config.training.smoke_steps, config.environment.episode_length)):
         device_obs = torch.from_numpy(observation.device_obs).float()
@@ -137,11 +149,35 @@ def run_smoke_rollout(config: ExperimentConfig) -> SmokeRunSummary:
         if done:
             break
 
+    if config.model.use_l_i and len(buffer) > 0:
+        with torch.no_grad():
+            trajectory_batch = buffer.build_agent_trajectory_batch(
+                window_size=config.training.trajectory_window,
+                obs_dim=config.environment.observation_dim,
+                action_dim=config.model.action_dim,
+                action_scale=config.training.trajectory_action_scale,
+                device="cpu",
+            )
+            role_mu_batch, role_sigma_batch = role_encoder(trajectory_batch["current_obs"])
+            traj_mu_batch, traj_sigma_batch = trajectory_encoder(
+                trajectory_batch["trajectory"],
+                trajectory_batch["current_obs"],
+            )
+            last_l_i_loss = float(
+                role_identifiability_loss(
+                    role_mu=role_mu_batch,
+                    role_std=role_sigma_batch,
+                    traj_mu=traj_mu_batch,
+                    traj_std=traj_sigma_batch,
+                ).item()
+            )
+
     return SmokeRunSummary(
         steps=len(buffer),
         mean_reward=buffer.mean_reward(),
         last_value=last_value,
         critic_type=config.model.critic_type,
+        last_l_i_loss=last_l_i_loss,
     )
 
 
@@ -150,7 +186,8 @@ def main() -> None:
     summary = run_smoke_rollout(config)
     print(
         f"smoke_run critic={summary.critic_type} steps={summary.steps} "
-        f"mean_reward={summary.mean_reward:.4f} last_value={summary.last_value:.4f}"
+        f"mean_reward={summary.mean_reward:.4f} last_value={summary.last_value:.4f} "
+        f"last_l_i_loss={summary.last_l_i_loss if summary.last_l_i_loss is not None else 'n/a'}"
     )
 
 
