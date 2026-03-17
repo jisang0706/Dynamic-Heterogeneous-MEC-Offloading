@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from src.environment import DynamicMECEnv
+from src.baselines.qag import queue_aware_greedy_actions
 
 
 def local_only_actions(num_agents: int, num_tasks: int = 3) -> np.ndarray:
@@ -31,7 +32,7 @@ class FixedPolicySummary:
 
 def run_fixed_policy_baseline(config, policy_name: str, num_episodes: int | None = None) -> FixedPolicySummary:
     normalized_name = policy_name.upper()
-    if normalized_name not in {"LOCAL_ONLY", "EDGE_ONLY", "RANDOM"}:
+    if normalized_name not in {"LOCAL_ONLY", "EDGE_ONLY", "RANDOM", "QAG"}:
         raise ValueError(f"Unsupported fixed baseline: {policy_name}")
 
     episode_count = config.training.total_episodes if num_episodes is None else num_episodes
@@ -50,6 +51,8 @@ def run_fixed_policy_baseline(config, policy_name: str, num_episodes: int | None
                 action = local_only_actions(config.environment.num_agents, config.environment.num_tasks_per_step)
             elif normalized_name == "EDGE_ONLY":
                 action = edge_only_actions(config.environment.num_agents, config.environment.num_tasks_per_step)
+            elif normalized_name == "QAG":
+                action = queue_aware_greedy_actions(env)
             else:
                 assert random_rng is not None
                 action = random_rng.uniform(

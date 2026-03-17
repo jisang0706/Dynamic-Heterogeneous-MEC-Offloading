@@ -11,9 +11,11 @@ from src.baselines import (
     apply_experiment_variant,
     li_original_available,
     li_original_missing_files,
+    queue_aware_greedy_actions,
     run_fixed_policy_baseline,
 )
 from src.config import EnvironmentConfig, ExperimentConfig, ModelConfig, TrainingConfig
+from src.environment import DynamicMECEnv
 from src.train import SmokeRunSummary, TrainingRunSummary, run_smoke_rollout, run_training
 
 
@@ -43,6 +45,26 @@ class Task7BaselineTests(unittest.TestCase):
         summary = run_fixed_policy_baseline(config, "LOCAL_ONLY", num_episodes=1)
 
         self.assertEqual(summary.policy_name, "LOCAL_ONLY")
+        self.assertEqual(summary.episodes, 1)
+
+    def test_qag_baseline_variant_and_action_format(self) -> None:
+        config = ExperimentConfig(
+            seed=3,
+            environment=EnvironmentConfig(num_agents=5, episode_length=2),
+            training=TrainingConfig(total_episodes=1),
+        )
+        resolved_config, variant = apply_experiment_variant(config, "QAG")
+        env = DynamicMECEnv(resolved_config.environment, seed=resolved_config.seed)
+        env.reset()
+
+        action = queue_aware_greedy_actions(env)
+        summary = run_fixed_policy_baseline(resolved_config, "QAG", num_episodes=1)
+
+        self.assertIsNotNone(variant)
+        self.assertEqual(variant.variant_id, "QAG")
+        self.assertEqual(tuple(action.shape), (5, 4))
+        self.assertTrue(((0.0 <= action) & (action <= 1.0)).all())
+        self.assertEqual(summary.policy_name, "QAG")
         self.assertEqual(summary.episodes, 1)
 
     def test_li_original_reports_missing_files_in_current_workspace(self) -> None:

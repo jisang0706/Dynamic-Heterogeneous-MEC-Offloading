@@ -27,6 +27,7 @@ VARIANT_REGISTRY: dict[str, ExperimentVariant] = {
     "LOCAL_ONLY": ExperimentVariant("LOCAL_ONLY", "Local Only", "fixed", "fixed", "All computation remains local."),
     "EDGE_ONLY": ExperimentVariant("EDGE_ONLY", "Edge Computing", "fixed", "fixed", "All tasks fully offloaded with max power."),
     "RANDOM": ExperimentVariant("RANDOM", "Random", "fixed", "fixed", "Uniform random offloading and power ratios."),
+    "QAG": ExperimentVariant("QAG", "Queue-Aware Greedy", "fixed", "fixed", "Queue-aware heuristic using current queues, channel, CPU, and deadlines."),
     "A1": ExperimentVariant("A1", "Proposed", "ablation", "ppo", "P-GCN star critic + role + L_I."),
     "A2": ExperimentVariant("A2", "No L_I", "ablation", "ppo", "P-GCN + role without identifiability loss."),
     "A3": ExperimentVariant("A3", "Static Full Model", "ablation", "ppo", "Full model on static environment."),

@@ -17,6 +17,7 @@ from src.baselines import (
     edge_only_actions,
     get_experiment_variant,
     local_only_actions,
+    queue_aware_greedy_actions,
 )
 from src.buffer import RolloutBuffer, Transition
 from src.config import ExperimentConfig, TrainingConfig, _str_to_bool, build_config_from_dict
@@ -309,7 +310,7 @@ def _build_fixed_policy(args: argparse.Namespace) -> LoadedPolicy:
     training = replace(base_config.training, run_mode="smoke", variant_id=args.variant_id)
     resolved_config, variant = apply_experiment_variant(replace(base_config, environment=environment, training=training), args.variant_id)
     if variant is None or variant.runner_kind != "fixed":
-        raise SystemExit("Checkpoint-free evaluation currently supports only fixed baselines such as LOCAL_ONLY, EDGE_ONLY, and RANDOM.")
+        raise SystemExit("Checkpoint-free evaluation currently supports fixed baselines such as LOCAL_ONLY, EDGE_ONLY, RANDOM, and QAG.")
     return LoadedPolicy(
         config=resolved_config,
         runner_kind="fixed",
@@ -361,6 +362,8 @@ def _select_fixed_action(policy: LoadedPolicy, episode_idx: int, step_idx: int) 
         env_action = local_only_actions(num_agents, num_tasks)
     elif normalized_name == "EDGE_ONLY":
         env_action = edge_only_actions(num_agents, num_tasks)
+    elif normalized_name == "QAG":
+        env_action = queue_aware_greedy_actions(policy.env)
     else:
         seed = policy.config.seed + episode_idx * policy.config.environment.episode_length + step_idx
         env_action = np.random.default_rng(seed).uniform(0.0, 1.0, size=(num_agents, num_tasks + 1)).astype(np.float32)

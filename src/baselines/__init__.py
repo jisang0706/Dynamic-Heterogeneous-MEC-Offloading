@@ -4,6 +4,7 @@ from .ippo import IPPOBaselineSpec, IPPOTrainer
 from .li_original import LiOriginalBaselineSpec, build_li_original_command, li_original_available, li_original_missing_files
 from .maddpg import MADDPGBaselineSpec, run_maddpg_baseline
 from .presets import ExperimentVariant, apply_experiment_variant, get_experiment_variant, list_experiment_variants
+from .qag import QAGBaselineSpec, queue_aware_greedy_actions
 
 __all__ = [
     "DeterministicContextBaselineSpec",
@@ -15,6 +16,7 @@ __all__ = [
     "IPPOTrainer",
     "LiOriginalBaselineSpec",
     "MADDPGBaselineSpec",
+    "QAGBaselineSpec",
     "apply_experiment_variant",
     "build_li_original_command",
     "edge_only_actions",
@@ -24,6 +26,7 @@ __all__ = [
     "local_only_actions",
     "random_actions",
     "list_experiment_variants",
+    "queue_aware_greedy_actions",
     "run_fixed_policy_baseline",
     "run_maddpg_baseline",
 ]
