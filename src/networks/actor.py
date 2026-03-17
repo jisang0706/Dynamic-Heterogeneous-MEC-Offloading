@@ -10,7 +10,7 @@ from src.utils import orthogonal_init
 class RoleConditionedActor(nn.Module):
     def __init__(
         self,
-        obs_dim: int = 14,
+        obs_dim: int = 16,
         role_dim: int = 3,
         action_dim: int = 4,
         hidden_dim: int = 128,
@@ -82,7 +82,7 @@ class MultiAgentRoleConditionedActor(nn.Module):
         self,
         num_agents: int,
         actor_type: str = "shared",
-        obs_dim: int = 14,
+        obs_dim: int = 16,
         role_dim: int = 3,
         action_dim: int = 4,
         hidden_dim: int = 128,

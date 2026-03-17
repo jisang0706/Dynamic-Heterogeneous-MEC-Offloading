@@ -64,9 +64,9 @@ class Task7BaselineTests(unittest.TestCase):
         self.assertEqual(summary.critic_type, "pgcn")
 
     def test_deterministic_context_encoder_matches_role_encoder_interface(self) -> None:
-        encoder = DeterministicContextEncoder(obs_dim=14, context_dim=3, hidden_dim=12)
+        encoder = DeterministicContextEncoder(obs_dim=16, context_dim=3, hidden_dim=12)
 
-        context, sigma = encoder(torch.zeros(5, 14))
+        context, sigma = encoder(torch.zeros(5, 16))
 
         self.assertEqual(tuple(context.shape), (5, 3))
         self.assertIsNone(sigma)

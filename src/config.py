@@ -49,10 +49,15 @@ class EnvironmentConfig:
     queue_clip_max: float = 20.0
     observation_dim: int = 14
     central_observation_dim: int = 3
+    actor_queue_broadcast_dim: int = 2
 
     @property
     def noise_density_w_hz(self) -> float:
         return 10 ** ((self.noise_density_dbm_hz - 30.0) / 10.0)
+
+    @property
+    def actor_observation_dim(self) -> int:
+        return self.observation_dim + self.actor_queue_broadcast_dim
 
     @property
     def max_task_work_gcycles(self) -> float:

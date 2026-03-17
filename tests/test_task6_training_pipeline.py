@@ -33,13 +33,13 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         self.assertTrue(torch.allclose(returns, expected))
 
     def test_multi_agent_actor_supports_shared_and_individual_modes(self) -> None:
-        obs = torch.randn(4, 5, 14)
+        obs = torch.randn(4, 5, 16)
         role_mu = torch.randn(4, 5, 3)
 
         shared_actor = MultiAgentRoleConditionedActor(
             num_agents=5,
             actor_type="shared",
-            obs_dim=14,
+            obs_dim=16,
             role_dim=3,
             action_dim=4,
             hidden_dim=64,
@@ -48,7 +48,7 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         individual_actor = MultiAgentRoleConditionedActor(
             num_agents=5,
             actor_type="individual",
-            obs_dim=14,
+            obs_dim=16,
             role_dim=3,
             action_dim=4,
             hidden_dim=64,
@@ -69,8 +69,9 @@ class Task6TrainingPipelineTests(unittest.TestCase):
             reward = np.full(2, reward_value, dtype=np.float32)
             buffer.add(
                 Transition(
-                    device_obs=np.zeros((2, 14), dtype=np.float32),
-                    server_obs=np.zeros(3, dtype=np.float32),
+                    actor_obs=np.zeros((2, 16), dtype=np.float32),
+                    core_obs=np.zeros((2, 14), dtype=np.float32),
+                    server_info=np.zeros(3, dtype=np.float32),
                     role_mu=np.zeros((2, 3), dtype=np.float32),
                     action=np.zeros((2, 4), dtype=np.float32),
                     log_prob=np.zeros(2, dtype=np.float32),

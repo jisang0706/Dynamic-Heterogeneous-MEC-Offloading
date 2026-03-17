@@ -11,8 +11,9 @@ from src.utils import compute_gae
 
 @dataclass(slots=True)
 class Transition:
-    device_obs: np.ndarray
-    server_obs: np.ndarray
+    actor_obs: np.ndarray
+    core_obs: np.ndarray
+    server_info: np.ndarray
     role_mu: np.ndarray
     action: np.ndarray
     log_prob: np.ndarray
@@ -22,6 +23,14 @@ class Transition:
     joint_reward: float | None = None
     scaled_joint_reward: float | None = None
     value: float | None = None
+
+    @property
+    def device_obs(self) -> np.ndarray:
+        return self.core_obs
+
+    @property
+    def server_obs(self) -> np.ndarray:
+        return self.server_info
 
 
 class RolloutBuffer:
@@ -71,7 +80,7 @@ class RolloutBuffer:
             raise ValueError("RolloutBuffer is empty.")
 
         num_steps = len(self.transitions)
-        num_agents = self.transitions[0].device_obs.shape[0]
+        num_agents = self.transitions[0].core_obs.shape[0]
         traj_feature_dim = obs_dim + action_dim
 
         trajectories = np.zeros((num_steps * num_agents, window_size, traj_feature_dim), dtype=np.float32)
@@ -82,7 +91,7 @@ class RolloutBuffer:
         for step_idx, transition in enumerate(self.transitions):
             for agent_idx in range(num_agents):
                 sample_idx = step_idx * num_agents + agent_idx
-                current_obs[sample_idx] = transition.device_obs[agent_idx]
+                current_obs[sample_idx] = transition.actor_obs[agent_idx]
                 role_mu[sample_idx] = transition.role_mu[agent_idx]
                 actions[sample_idx] = transition.action[agent_idx]
 
@@ -93,7 +102,7 @@ class RolloutBuffer:
                     history.append(
                         np.concatenate(
                             [
-                                hist_transition.device_obs[agent_idx],
+                                hist_transition.actor_obs[agent_idx],
                                 hist_transition.action[agent_idx] / action_scale,
                             ],
                             axis=-1,
@@ -154,7 +163,7 @@ class RolloutBuffer:
 
     def build_step_batch(self, device: torch.device | str = "cpu") -> dict[str, torch.Tensor]:
         tensors = self.as_tensors(device=device)
-        num_steps, num_agents = tensors["device_obs"].shape[:2]
+        num_steps, num_agents = tensors["core_obs"].shape[:2]
         step_index = torch.arange(num_steps, device=device, dtype=torch.long)
         agent_index = torch.arange(num_agents, device=device, dtype=torch.long)
         flat_step_index = step_index.unsqueeze(1).expand(num_steps, num_agents).reshape(-1)
@@ -166,11 +175,12 @@ class RolloutBuffer:
     def as_tensors(self, device: torch.device | str = "cpu") -> dict[str, Any]:
         if not self.transitions:
             raise ValueError("RolloutBuffer is empty.")
-        num_agents = self.transitions[0].device_obs.shape[0]
+        num_agents = self.transitions[0].core_obs.shape[0]
         position_shape = (num_agents, 2)
         stacked = {
-            "device_obs": np.stack([item.device_obs for item in self.transitions]),
-            "server_obs": np.stack([item.server_obs for item in self.transitions]),
+            "actor_obs": np.stack([item.actor_obs for item in self.transitions]),
+            "core_obs": np.stack([item.core_obs for item in self.transitions]),
+            "server_info": np.stack([item.server_info for item in self.transitions]),
             "positions": np.stack([self._positions(item, position_shape=position_shape) for item in self.transitions]),
             "role_mu": np.stack([item.role_mu for item in self.transitions]),
             "action": np.stack([item.action for item in self.transitions]),

@@ -18,7 +18,7 @@ class DeterministicContextBaselineSpec:
 
 
 class DeterministicContextEncoder(nn.Module):
-    def __init__(self, obs_dim: int = 14, context_dim: int = 3, hidden_dim: int = 12) -> None:
+    def __init__(self, obs_dim: int = 16, context_dim: int = 3, hidden_dim: int = 12) -> None:
         super().__init__()
         self.fc1 = orthogonal_init(nn.Linear(obs_dim, hidden_dim), gain=nn.init.calculate_gain("relu"))
         self.fc_context = orthogonal_init(nn.Linear(hidden_dim, context_dim), gain=1.0)
@@ -35,7 +35,7 @@ class DeterministicContextTrainer(PPOTrainer):
         super().__init__(config)
         stale_role_encoder = self.role_encoder
         self.context_encoder = DeterministicContextEncoder(
-            obs_dim=config.environment.observation_dim,
+            obs_dim=config.environment.actor_observation_dim,
             context_dim=config.model.role_dim,
             hidden_dim=config.model.role_hidden_dim,
         ).to(self.device)

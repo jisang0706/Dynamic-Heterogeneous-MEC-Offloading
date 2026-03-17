@@ -9,7 +9,7 @@ from src.utils import orthogonal_init
 class TrajectoryEncoder(nn.Module):
     def __init__(
         self,
-        obs_dim: int = 14,
+        obs_dim: int = 16,
         action_dim: int = 4,
         role_dim: int = 3,
         hidden_dim: int = 64,

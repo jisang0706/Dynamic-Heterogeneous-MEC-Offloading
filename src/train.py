@@ -125,13 +125,13 @@ class PPOTrainer:
         self.trajectory_encoder = None
         if config.model.use_role:
             self.role_encoder = RoleEncoder(
-                obs_dim=config.environment.observation_dim,
+                obs_dim=config.environment.actor_observation_dim,
                 role_dim=config.model.role_dim,
                 hidden_dim=config.model.role_hidden_dim,
             ).to(self.device)
             if config.model.use_l_i:
                 self.trajectory_encoder = TrajectoryEncoder(
-                    obs_dim=config.environment.observation_dim,
+                    obs_dim=config.environment.actor_observation_dim,
                     action_dim=config.model.action_dim,
                     role_dim=config.model.role_dim,
                     hidden_dim=config.model.trajectory_hidden_dim,
@@ -140,7 +140,7 @@ class PPOTrainer:
         self.actor = MultiAgentRoleConditionedActor(
             num_agents=config.environment.num_agents,
             actor_type=config.model.actor_type,
-            obs_dim=config.environment.observation_dim,
+            obs_dim=config.environment.actor_observation_dim,
             role_dim=config.model.role_dim,
             action_dim=config.model.action_dim,
             hidden_dim=config.model.actor_hidden_dim,
@@ -177,15 +177,15 @@ class PPOTrainer:
             self.episode_log_path.write_text("", encoding="utf-8")
             self.update_log_path.write_text("", encoding="utf-8")
 
-    def _actor_role_posterior(self, device_obs: Any) -> tuple[Any, Any | None]:
+    def _actor_role_posterior(self, actor_obs: Any) -> tuple[Any, Any | None]:
         if self.role_encoder is None:
-            shape = (*device_obs.shape[:-1], self.config.model.role_dim)
-            zeros = self.torch.zeros(shape, dtype=device_obs.dtype, device=device_obs.device)
+            shape = (*actor_obs.shape[:-1], self.config.model.role_dim)
+            zeros = self.torch.zeros(shape, dtype=actor_obs.dtype, device=actor_obs.device)
             return zeros, None
 
-        flat_obs = device_obs.reshape(-1, device_obs.shape[-1])
+        flat_obs = actor_obs.reshape(-1, actor_obs.shape[-1])
         role_mu, role_sigma = self.role_encoder(flat_obs)
-        role_shape = (*device_obs.shape[:-1], self.config.model.role_dim)
+        role_shape = (*actor_obs.shape[:-1], self.config.model.role_dim)
         return role_mu.reshape(role_shape), role_sigma.reshape(role_shape)
 
     def _scale_device_obs(self, device_obs: Any, update_stats: bool) -> Any:
@@ -210,10 +210,21 @@ class PPOTrainer:
             scaled = scaled[0]
         return self.torch.from_numpy(scaled).float().to(self.device)
 
-    def _prepare_model_observation(self, observation: Any, update_stats: bool) -> tuple[Any, Any]:
-        device_obs = self.torch.from_numpy(observation.device_obs).float().to(self.device)
-        server_obs = self.torch.from_numpy(observation.server_obs).float().to(self.device)
-        return self._scale_device_obs(device_obs, update_stats), self._scale_server_obs(server_obs, update_stats)
+    def _build_actor_observation(self, core_obs: Any, server_info: Any) -> Any:
+        queue_broadcast = server_info[..., : self.config.environment.actor_queue_broadcast_dim]
+        if core_obs.dim() == 2:
+            expanded_queue = queue_broadcast.unsqueeze(0).expand(core_obs.shape[0], -1)
+            return self.torch.cat([core_obs, expanded_queue], dim=-1)
+        expanded_queue = queue_broadcast.unsqueeze(1).expand(-1, core_obs.shape[1], -1)
+        return self.torch.cat([core_obs, expanded_queue], dim=-1)
+
+    def _prepare_model_observation(self, observation: Any, update_stats: bool) -> tuple[Any, Any, Any]:
+        core_obs = self.torch.from_numpy(observation.device_obs).float().to(self.device)
+        server_info = self.torch.from_numpy(observation.server_obs).float().to(self.device)
+        core_obs = self._scale_device_obs(core_obs, update_stats)
+        server_info = self._scale_server_obs(server_info, update_stats)
+        actor_obs = self._build_actor_observation(core_obs, server_info)
+        return actor_obs, core_obs, server_info
 
     @staticmethod
     def _append_json_record(path: Any, payload: dict[str, Any]) -> None:
@@ -347,16 +358,16 @@ class PPOTrainer:
 
             for _ in range(step_limit):
                 positions_np = self.env.positions.copy()
-                device_obs, server_obs = self._prepare_model_observation(observation, update_stats=True)
+                actor_obs, core_obs, server_info = self._prepare_model_observation(observation, update_stats=True)
                 positions = self.torch.from_numpy(positions_np).float().to(self.device)
 
                 with self.torch.no_grad():
-                    role_mu, _ = self._actor_role_posterior(device_obs)
+                    role_mu, _ = self._actor_role_posterior(actor_obs)
                     action, env_action, log_prob = self.actor.sample_action(
-                        device_obs,
+                        actor_obs,
                         role_mu if self.config.model.use_role else None,
                     )
-                    value = float(self._critic_values(device_obs, server_obs, positions).item())
+                    value = float(self._critic_values(core_obs, server_info, positions).item())
 
                 next_observation, reward, done, _ = self.env.step(env_action.cpu().numpy())
                 joint_reward = float(reward.sum())
@@ -367,8 +378,9 @@ class PPOTrainer:
                 episode_length += 1
                 buffer.add(
                     Transition(
-                        device_obs=device_obs.cpu().numpy(),
-                        server_obs=server_obs.cpu().numpy(),
+                        actor_obs=actor_obs.cpu().numpy(),
+                        core_obs=core_obs.cpu().numpy(),
+                        server_info=server_info.cpu().numpy(),
                         positions=positions_np.copy(),
                         role_mu=role_mu.cpu().numpy(),
                         action=action.cpu().numpy(),
@@ -390,10 +402,10 @@ class PPOTrainer:
                     break
 
             if budget_truncated:
-                device_obs, server_obs = self._prepare_model_observation(observation, update_stats=False)
+                _, core_obs, server_info = self._prepare_model_observation(observation, update_stats=False)
                 positions = self.torch.from_numpy(self.env.positions.copy()).float().to(self.device)
                 with self.torch.no_grad():
-                    last_value = float(self._critic_values(device_obs, server_obs, positions).item())
+                    last_value = float(self._critic_values(core_obs, server_info, positions).item())
             else:
                 last_value = 0.0
 
@@ -421,13 +433,13 @@ class PPOTrainer:
         if self.config.model.use_role and self.config.model.use_l_i:
             trajectory_batch = buffer.build_agent_trajectory_batch(
                 window_size=self.config.training.trajectory_window,
-                obs_dim=self.config.environment.observation_dim,
+                obs_dim=self.config.environment.actor_observation_dim,
                 action_dim=self.config.model.action_dim,
                 action_scale=self.config.training.trajectory_action_scale,
                 device=self.device,
             )
 
-        num_steps = batch["device_obs"].shape[0]
+        num_steps = batch["actor_obs"].shape[0]
         mini_batch_size = min(self.config.training.batch_size, num_steps)
         actor_losses: list[float] = []
         critic_losses: list[float] = []
@@ -438,17 +450,18 @@ class PPOTrainer:
             permutation = self.torch.randperm(num_steps, device=self.device)
             for start_idx in range(0, num_steps, mini_batch_size):
                 step_indices = permutation[start_idx : start_idx + mini_batch_size]
-                device_obs = batch["device_obs"][step_indices]
-                server_obs = batch["server_obs"][step_indices]
+                actor_obs = batch["actor_obs"][step_indices]
+                core_obs = batch["core_obs"][step_indices]
+                server_info = batch["server_info"][step_indices]
                 positions = batch["positions"][step_indices]
                 action = batch["action"][step_indices]
                 old_log_prob = batch["log_prob"][step_indices]
                 advantage = gae_batch["advantage"][step_indices]
                 returns = gae_batch["return"][step_indices]
 
-                role_mu, _ = self._actor_role_posterior(device_obs)
+                role_mu, _ = self._actor_role_posterior(actor_obs)
                 log_prob, entropy, _, _ = self.actor.evaluate_actions(
-                    device_obs,
+                    actor_obs,
                     action,
                     role_mu if self.config.model.use_role else None,
                 )
@@ -463,13 +476,13 @@ class PPOTrainer:
                 policy_loss = -self.torch.minimum(unclipped, clipped).mean()
                 entropy_bonus = entropy.mean()
 
-                l_i_loss = device_obs.new_tensor(0.0)
+                l_i_loss = actor_obs.new_tensor(0.0)
                 if trajectory_batch is not None:
                     computed_l_i = self._compute_l_i_loss(trajectory_batch, step_indices=step_indices)
                     if computed_l_i is not None:
                         l_i_loss = computed_l_i
                         l_i_losses.append(float(l_i_loss.item()))
-                l_d_loss = device_obs.new_tensor(0.0)
+                l_d_loss = actor_obs.new_tensor(0.0)
                 if self.config.model.use_role and self.config.model.use_l_d_simple:
                     flat_role_mu = role_mu.reshape(-1, role_mu.shape[-1])
                     l_d_loss = self.role_diversity_loss(flat_role_mu)
@@ -488,7 +501,7 @@ class PPOTrainer:
                 )
                 self.actor_optimizer.step()
 
-                value_pred = self._critic_values(device_obs, server_obs, positions)
+                value_pred = self._critic_values(core_obs, server_info, positions)
                 critic_loss = self.torch.nn.functional.mse_loss(value_pred, returns)
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()
@@ -516,7 +529,7 @@ class PPOTrainer:
         if self.config.model.use_role and self.config.model.use_l_i and len(buffer) > 0:
             trajectory_batch = buffer.build_agent_trajectory_batch(
                 window_size=self.config.training.trajectory_window,
-                obs_dim=self.config.environment.observation_dim,
+                obs_dim=self.config.environment.actor_observation_dim,
                 action_dim=self.config.model.action_dim,
                 action_scale=self.config.training.trajectory_action_scale,
                 device=self.device,

@@ -8,7 +8,7 @@ from src.utils import orthogonal_init
 
 
 class RoleEncoder(nn.Module):
-    def __init__(self, obs_dim: int = 14, role_dim: int = 3, hidden_dim: int = 12) -> None:
+    def __init__(self, obs_dim: int = 16, role_dim: int = 3, hidden_dim: int = 12) -> None:
         super().__init__()
         self.fc1 = orthogonal_init(nn.Linear(obs_dim, hidden_dim), gain=nn.init.calculate_gain("relu"))
         self.fc_mu = orthogonal_init(nn.Linear(hidden_dim, role_dim), gain=1.0)

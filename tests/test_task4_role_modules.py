@@ -11,8 +11,8 @@ from src.modules import RoleEncoder, TrajectoryEncoder, role_diversity_loss, rol
 
 class Task4RoleModuleTests(unittest.TestCase):
     def test_role_encoder_outputs_positive_sigma(self) -> None:
-        encoder = RoleEncoder(obs_dim=14, role_dim=3, hidden_dim=12)
-        obs = torch.randn(5, 14)
+        encoder = RoleEncoder(obs_dim=16, role_dim=3, hidden_dim=12)
+        obs = torch.randn(5, 16)
 
         mu, sigma = encoder(obs)
 
@@ -21,9 +21,9 @@ class Task4RoleModuleTests(unittest.TestCase):
         self.assertTrue(torch.all(sigma > 0.0))
 
     def test_trajectory_encoder_conditions_on_current_observation(self) -> None:
-        encoder = TrajectoryEncoder(obs_dim=14, action_dim=4, role_dim=3, hidden_dim=64)
-        trajectory = torch.randn(6, 20, 18)
-        current_obs = torch.randn(6, 14)
+        encoder = TrajectoryEncoder(obs_dim=16, action_dim=4, role_dim=3, hidden_dim=64)
+        trajectory = torch.randn(6, 20, 20)
+        current_obs = torch.randn(6, 16)
 
         mu, sigma = encoder(trajectory, current_obs)
 
@@ -42,17 +42,20 @@ class Task4RoleModuleTests(unittest.TestCase):
     def test_rollout_buffer_builds_agent_trajectory_windows(self) -> None:
         buffer = RolloutBuffer()
         num_agents = 2
-        obs_dim = 14
+        obs_dim = 16
+        core_obs_dim = 14
         action_dim = 4
         role_dim = 3
 
         for step in range(3):
-            device_obs = np.full((num_agents, obs_dim), step, dtype=np.float32)
+            actor_obs = np.full((num_agents, obs_dim), step, dtype=np.float32)
+            core_obs = np.full((num_agents, core_obs_dim), step, dtype=np.float32)
             action = np.full((num_agents, action_dim), step + 0.5, dtype=np.float32)
             buffer.add(
                 Transition(
-                    device_obs=device_obs,
-                    server_obs=np.array([0.1, 0.0, 1.0], dtype=np.float32),
+                    actor_obs=actor_obs,
+                    core_obs=core_obs,
+                    server_info=np.array([0.1, 0.0, 1.0], dtype=np.float32),
                     role_mu=np.full((num_agents, role_dim), step, dtype=np.float32),
                     action=action,
                     log_prob=np.zeros(num_agents, dtype=np.float32),
@@ -68,10 +71,10 @@ class Task4RoleModuleTests(unittest.TestCase):
             action_scale=10.0,
         )
 
-        self.assertEqual(tuple(batch["trajectory"].shape), (6, 2, 18))
-        self.assertEqual(tuple(batch["current_obs"].shape), (6, 14))
-        self.assertTrue(torch.allclose(batch["trajectory"][0], torch.zeros(2, 18)))
-        expected_prev = torch.cat([torch.zeros(14), torch.full((4,), 0.05)], dim=0)
+        self.assertEqual(tuple(batch["trajectory"].shape), (6, 2, 20))
+        self.assertEqual(tuple(batch["current_obs"].shape), (6, 16))
+        self.assertTrue(torch.allclose(batch["trajectory"][0], torch.zeros(2, 20)))
+        expected_prev = torch.cat([torch.zeros(16), torch.full((4,), 0.05)], dim=0)
         self.assertTrue(torch.allclose(batch["trajectory"][2, -1], expected_prev))
 
     def test_role_diversity_loss_is_non_positive(self) -> None:

@@ -233,6 +233,8 @@ def _load_trainer_checkpoint(trainer: Any, checkpoint: dict[str, Any], runner_ki
             trainer.critics.eval()
         if checkpoint.get("device_obs_scaler") is not None and trainer.device_obs_scaler is not None:
             trainer.device_obs_scaler.load_state_dict(checkpoint["device_obs_scaler"])
+        if checkpoint.get("server_obs_scaler") is not None and getattr(trainer, "server_obs_scaler", None) is not None:
+            trainer.server_obs_scaler.load_state_dict(checkpoint["server_obs_scaler"])
         return
 
     if checkpoint.get("critic") is not None:
@@ -341,6 +343,15 @@ def _scale_server_obs(policy: LoadedPolicy, server_obs: np.ndarray) -> torch.Ten
     return tensor
 
 
+def _build_actor_observation(policy: LoadedPolicy, core_obs: torch.Tensor, server_info: torch.Tensor) -> torch.Tensor:
+    queue_broadcast = server_info[..., : policy.config.environment.actor_queue_broadcast_dim]
+    if core_obs.dim() == 2:
+        expanded_queue = queue_broadcast.unsqueeze(0).expand(core_obs.shape[0], -1)
+        return torch.cat([core_obs, expanded_queue], dim=-1)
+    expanded_queue = queue_broadcast.unsqueeze(1).expand(-1, core_obs.shape[1], -1)
+    return torch.cat([core_obs, expanded_queue], dim=-1)
+
+
 def _select_fixed_action(policy: LoadedPolicy, episode_idx: int, step_idx: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     num_agents = policy.config.environment.num_agents
     num_tasks = policy.config.environment.num_tasks_per_step
@@ -360,35 +371,37 @@ def _select_learned_action(
     policy: LoadedPolicy,
     observation: Any,
     deterministic_policy: bool,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
     with torch.no_grad():
-        device_obs = _scale_device_obs(policy, observation.device_obs)
-        server_obs = _scale_server_obs(policy, observation.server_obs)
+        core_obs = _scale_device_obs(policy, observation.device_obs)
+        server_info = _scale_server_obs(policy, observation.server_obs)
+        actor_obs = _build_actor_observation(policy, core_obs, server_info)
 
         role_mu = None
         role_sigma = None
         if policy.runner_kind != "ippo" and policy.role_encoder is not None:
-            role_mu, role_sigma = policy.role_encoder(device_obs)
+            role_mu, role_sigma = policy.role_encoder(actor_obs)
         elif policy.use_role:
             zeros = torch.zeros(
                 (policy.config.environment.num_agents, policy.config.model.role_dim),
-                dtype=device_obs.dtype,
+                dtype=actor_obs.dtype,
                 device=policy.device,
             )
             role_mu = zeros
 
         actor_role = role_mu if policy.use_role else None
         if deterministic_policy:
-            mean, _ = policy.actor(device_obs, actor_role)
+            mean, _ = policy.actor(actor_obs, actor_role)
             action = torch.clamp(mean, 0.0, 10.0)
-            log_prob, _, _, _ = policy.actor.evaluate_actions(device_obs, action, actor_role)
+            log_prob, _, _, _ = policy.actor.evaluate_actions(actor_obs, action, actor_role)
         else:
-            action, _, log_prob = policy.actor.sample_action(device_obs, actor_role)
+            action, _, log_prob = policy.actor.sample_action(actor_obs, actor_role)
         env_action = policy.actor.action_to_env(action)
 
     return (
-        device_obs.cpu().numpy(),
-        server_obs.cpu().numpy(),
+        actor_obs.cpu().numpy(),
+        core_obs.cpu().numpy(),
+        server_info.cpu().numpy(),
         action.cpu().numpy(),
         env_action.cpu().numpy(),
         log_prob.cpu().numpy(),
@@ -406,7 +419,7 @@ def _episode_role_metrics(policy: LoadedPolicy, buffer: RolloutBuffer) -> dict[s
 
     batch = buffer.build_agent_trajectory_batch(
         window_size=policy.config.training.trajectory_window,
-        obs_dim=policy.config.environment.observation_dim,
+        obs_dim=policy.config.environment.actor_observation_dim,
         action_dim=policy.config.model.action_dim,
         action_scale=policy.config.training.trajectory_action_scale,
         device=policy.device,
@@ -445,12 +458,23 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
             if policy.runner_kind == "fixed":
                 env_action, action_native, log_prob, role_sigma = _select_fixed_action(policy, episode_idx, step_idx)
                 role_mu = np.zeros((policy.config.environment.num_agents, policy.config.model.role_dim), dtype=np.float32)
-                scaled_device_obs = observation.device_obs.copy()
-                scaled_server_obs = observation.server_obs.copy()
+                scaled_core_obs = observation.device_obs.copy()
+                scaled_server_info = observation.server_obs.copy()
+                scaled_actor_obs = np.concatenate(
+                    [
+                        scaled_core_obs,
+                        np.broadcast_to(
+                            scaled_server_info[: policy.config.environment.actor_queue_broadcast_dim],
+                            (policy.config.environment.num_agents, policy.config.environment.actor_queue_broadcast_dim),
+                        ),
+                    ],
+                    axis=-1,
+                ).astype(np.float32)
             else:
                 (
-                    scaled_device_obs,
-                    scaled_server_obs,
+                    scaled_actor_obs,
+                    scaled_core_obs,
+                    scaled_server_info,
                     action_native,
                     env_action,
                     log_prob,
@@ -480,8 +504,9 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
 
             rollout_buffer.add(
                 Transition(
-                    device_obs=np.asarray(scaled_device_obs, dtype=np.float32),
-                    server_obs=np.asarray(scaled_server_obs, dtype=np.float32),
+                    actor_obs=np.asarray(scaled_actor_obs, dtype=np.float32),
+                    core_obs=np.asarray(scaled_core_obs, dtype=np.float32),
+                    server_info=np.asarray(scaled_server_info, dtype=np.float32),
                     role_mu=np.asarray(role_mu, dtype=np.float32),
                     action=np.asarray(action_native, dtype=np.float32),
                     log_prob=np.asarray(log_prob, dtype=np.float32),

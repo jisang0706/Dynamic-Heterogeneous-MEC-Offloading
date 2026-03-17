@@ -22,7 +22,9 @@ class IPPOBaselineSpec:
 
 @dataclass(slots=True)
 class IPPOTransition:
-    device_obs: np.ndarray
+    actor_obs: np.ndarray
+    core_obs: np.ndarray
+    server_info: np.ndarray
     action: np.ndarray
     log_prob: np.ndarray
     reward: np.ndarray
@@ -96,7 +98,9 @@ class IPPORolloutBuffer:
         if not self.transitions:
             raise ValueError("IPPORolloutBuffer is empty.")
         stacked = {
-            "device_obs": np.stack([item.device_obs for item in self.transitions]),
+            "actor_obs": np.stack([item.actor_obs for item in self.transitions]),
+            "core_obs": np.stack([item.core_obs for item in self.transitions]),
+            "server_info": np.stack([item.server_info for item in self.transitions]),
             "action": np.stack([item.action for item in self.transitions]),
             "log_prob": np.stack([item.log_prob for item in self.transitions]),
             "reward": np.stack([item.reward for item in self.transitions]),
@@ -163,7 +167,7 @@ class IPPOTrainer:
         self.actor = MultiAgentRoleConditionedActor(
             num_agents=config.environment.num_agents,
             actor_type="individual",
-            obs_dim=config.environment.observation_dim,
+            obs_dim=config.environment.actor_observation_dim,
             role_dim=config.model.role_dim,
             action_dim=config.model.action_dim,
             hidden_dim=config.model.actor_hidden_dim,
@@ -177,6 +181,7 @@ class IPPOTrainer:
         self.critic_optimizer = torch.optim.Adam(self.critics.parameters(), lr=config.training.learning_rate)
 
         self.device_obs_scaler = ObservationScaler(shape=(config.environment.observation_dim,)) if config.training.use_obs_scaling else None
+        self.server_obs_scaler = ObservationScaler(shape=(config.environment.central_observation_dim,)) if config.training.use_obs_scaling else None
         self.reward_scalers = (
             [RewardScaler(gamma=config.training.gamma) for _ in range(config.environment.num_agents)]
             if config.training.use_reward_scaling
@@ -204,6 +209,21 @@ class IPPOTrainer:
             scaled = self.device_obs_scaler.transform(obs_np)
         return torch.from_numpy(scaled).float().to(self.device)
 
+    def _scale_server_obs(self, server_obs: torch.Tensor, update_stats: bool) -> torch.Tensor:
+        if self.server_obs_scaler is None:
+            return server_obs
+        obs_np = server_obs.detach().cpu().numpy().reshape(1, -1)
+        if update_stats:
+            scaled = self.server_obs_scaler.update_and_transform(obs_np)
+        else:
+            scaled = self.server_obs_scaler.transform(obs_np)
+        return torch.from_numpy(scaled[0]).float().to(self.device)
+
+    def _build_actor_observation(self, core_obs: torch.Tensor, server_info: torch.Tensor) -> torch.Tensor:
+        queue_broadcast = server_info[: self.config.environment.actor_queue_broadcast_dim]
+        expanded_queue = queue_broadcast.unsqueeze(0).expand(core_obs.shape[0], -1)
+        return torch.cat([core_obs, expanded_queue], dim=-1)
+
     def _append_json_record(self, path: Path, payload: dict[str, float | int | None]) -> None:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
@@ -225,6 +245,7 @@ class IPPOTrainer:
                 "actor_optimizer": self.actor_optimizer.state_dict(),
                 "critic_optimizer": self.critic_optimizer.state_dict(),
                 "device_obs_scaler": None if self.device_obs_scaler is None else self.device_obs_scaler.state_dict(),
+                "server_obs_scaler": None if self.server_obs_scaler is None else self.server_obs_scaler.state_dict(),
                 "reward_scalers": None if self.reward_scalers is None else [scaler.state_dict() for scaler in self.reward_scalers],
                 "episode_history": self.episode_history,
                 "update_history": self.update_history,
@@ -260,11 +281,14 @@ class IPPOTrainer:
                 step_limit = min(step_limit, steps_remaining)
 
             for _ in range(step_limit):
-                device_obs = torch.from_numpy(observation.device_obs).float().to(self.device)
-                device_obs = self._scale_device_obs(device_obs, update_stats=True)
+                core_obs = torch.from_numpy(observation.device_obs).float().to(self.device)
+                server_info = torch.from_numpy(observation.server_obs).float().to(self.device)
+                core_obs = self._scale_device_obs(core_obs, update_stats=True)
+                server_info = self._scale_server_obs(server_info, update_stats=True)
+                actor_obs = self._build_actor_observation(core_obs, server_info)
                 with torch.no_grad():
-                    action, env_action, log_prob = self.actor.sample_action(device_obs)
-                    value = self._critic_values(device_obs)
+                    action, env_action, log_prob = self.actor.sample_action(actor_obs)
+                    value = self._critic_values(core_obs)
 
                 next_observation, reward, done, _ = self.env.step(env_action.cpu().numpy())
                 if self.reward_scalers is None:
@@ -278,7 +302,9 @@ class IPPOTrainer:
                 episode_length += 1
                 buffer.add(
                     IPPOTransition(
-                        device_obs=device_obs.cpu().numpy(),
+                        actor_obs=actor_obs.cpu().numpy(),
+                        core_obs=core_obs.cpu().numpy(),
+                        server_info=server_info.cpu().numpy(),
                         action=action.cpu().numpy(),
                         log_prob=log_prob.cpu().numpy(),
                         reward=reward.copy(),
@@ -297,10 +323,10 @@ class IPPOTrainer:
                     break
 
             if budget_truncated:
-                next_device_obs = torch.from_numpy(observation.device_obs).float().to(self.device)
-                next_device_obs = self._scale_device_obs(next_device_obs, update_stats=False)
+                next_core_obs = torch.from_numpy(observation.device_obs).float().to(self.device)
+                next_core_obs = self._scale_device_obs(next_core_obs, update_stats=False)
                 with torch.no_grad():
-                    last_value = self._critic_values(next_device_obs).squeeze(0)
+                    last_value = self._critic_values(next_core_obs).squeeze(0)
             else:
                 last_value = torch.zeros(self.config.environment.num_agents, dtype=torch.float32, device=self.device)
 
@@ -320,7 +346,7 @@ class IPPOTrainer:
             last_value=last_value,
             device=self.device,
         )
-        num_steps = batch["device_obs"].shape[0]
+        num_steps = batch["actor_obs"].shape[0]
         mini_batch_size = min(self.config.training.batch_size, num_steps)
         actor_losses: list[float] = []
         critic_losses: list[float] = []
@@ -330,13 +356,14 @@ class IPPOTrainer:
             permutation = torch.randperm(num_steps, device=self.device)
             for start_idx in range(0, num_steps, mini_batch_size):
                 step_indices = permutation[start_idx : start_idx + mini_batch_size]
-                device_obs = batch["device_obs"][step_indices]
+                actor_obs = batch["actor_obs"][step_indices]
+                core_obs = batch["core_obs"][step_indices]
                 action = batch["action"][step_indices]
                 old_log_prob = batch["log_prob"][step_indices]
                 advantage = gae_batch["advantage"][step_indices]
                 returns = gae_batch["return"][step_indices]
 
-                log_prob, entropy, _, _ = self.actor.evaluate_actions(device_obs, action)
+                log_prob, entropy, _, _ = self.actor.evaluate_actions(actor_obs, action)
                 ratio = torch.exp(log_prob - old_log_prob)
                 unclipped = ratio * advantage
                 clipped = torch.clamp(
@@ -350,7 +377,7 @@ class IPPOTrainer:
                 torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.config.training.gradient_clip)
                 self.actor_optimizer.step()
 
-                value_pred = self._critic_values(device_obs)
+                value_pred = self._critic_values(core_obs)
                 critic_loss = torch.stack(
                     [
                         torch.nn.functional.mse_loss(value_pred[:, agent_idx], returns[:, agent_idx])
