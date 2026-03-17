@@ -87,8 +87,8 @@ class DynamicMECEnv:
         ]
         self.cpu_freqs_ghz = np.asarray([profile.cpu_ghz for profile in self.device_profiles], dtype=np.float32)
         self.max_tx_powers_mw = np.asarray([profile.max_tx_power_mw for profile in self.device_profiles], dtype=np.float32)
-        self.task_matrix = self._sample_tasks()
         self._update_channel_state()
+        self.task_matrix = self._sample_tasks()
         self.last_reward_breakdown = {}
         return self._build_observation()
 
@@ -114,8 +114,8 @@ class DynamicMECEnv:
         }
 
         self._advance_dynamics()
-        self.task_matrix = self._sample_tasks()
         self._update_channel_state()
+        self.task_matrix = self._sample_tasks()
         self.step_count += 1
         done = self.step_count >= self.config.episode_length
         info = {
@@ -145,8 +145,55 @@ class DynamicMECEnv:
         shape = (self.config.num_agents, self.config.num_tasks_per_step)
         data_size_mb = self.rng.uniform(*self.config.task_size_range_mb, size=shape)
         comp_density = self.rng.uniform(*self.config.task_density_range_gcycles_per_mb, size=shape)
-        deadline = self.rng.uniform(*self.config.task_deadline_range_s, size=shape)
+        if self.config.delay_mode == "li_original":
+            deadline = self.rng.uniform(*self.config.task_deadline_range_s, size=shape)
+        else:
+            deadline = self.compute_best_case_delay_components(
+                data_size_mb=data_size_mb,
+                comp_density_gcycles_per_mb=comp_density,
+            )["delay_threshold_s"]
         return np.stack((data_size_mb, comp_density, deadline), axis=-1).astype(np.float32)
+
+    def compute_best_case_delay_components(
+        self,
+        data_size_mb: np.ndarray | None = None,
+        comp_density_gcycles_per_mb: np.ndarray | None = None,
+    ) -> dict[str, np.ndarray]:
+        if data_size_mb is None:
+            data_size_mb = self.task_data_size_mb
+        if comp_density_gcycles_per_mb is None:
+            comp_density_gcycles_per_mb = self.task_density_gcycles_per_mb
+        if not self.device_profiles or self.channel_gains.size == 0 or self.max_tx_powers_mw.size == 0:
+            raise ValueError("Device profiles, channel gains, and max transmit powers must be initialized before computing best-case delays.")
+
+        data_size_mb = np.asarray(data_size_mb, dtype=np.float32)
+        comp_density_gcycles_per_mb = np.asarray(comp_density_gcycles_per_mb, dtype=np.float32)
+        task_work_gcycles = data_size_mb * comp_density_gcycles_per_mb
+
+        f_max_type_ghz = np.asarray([profile.cpu_range_ghz[1] for profile in self.device_profiles], dtype=np.float32)
+        d_local_best_s = task_work_gcycles / np.maximum(f_max_type_ghz[:, None], 1e-6)
+
+        device_bandwidth_hz = self.config.total_bandwidth_hz / float(self.config.num_agents)
+        noise_power_w = self.config.noise_density_w_hz * device_bandwidth_hz
+        tx_power_w = self.max_tx_powers_mw / 1000.0
+        snr = (tx_power_w * self.channel_gains) / max(noise_power_w, 1e-12)
+        beta_max_bps = device_bandwidth_hz * np.log2(1.0 + np.maximum(snr, 0.0))
+        beta_max_bps = np.maximum(beta_max_bps, self.config.min_rate_bps)
+
+        tx_delay_best_s = (data_size_mb * 1e6) / beta_max_bps[:, None]
+        edge_compute_best_s = task_work_gcycles / max(self.config.server_cpu_ghz, 1e-6)
+        d_edge_best_s = tx_delay_best_s + edge_compute_best_s
+        d_best_s = np.minimum(d_local_best_s, d_edge_best_s)
+        delay_threshold_s = self.config.u_slack * d_best_s
+
+        return {
+            "task_work_gcycles": task_work_gcycles.astype(np.float32),
+            "beta_max_bps": beta_max_bps.astype(np.float32),
+            "d_local_best_s": d_local_best_s.astype(np.float32),
+            "d_edge_best_s": d_edge_best_s.astype(np.float32),
+            "d_best_s": d_best_s.astype(np.float32),
+            "delay_threshold_s": delay_threshold_s.astype(np.float32),
+        }
 
     def _build_observation(self) -> ObservationBundle:
         device_obs = []

@@ -38,6 +38,8 @@ class EnvironmentConfig:
     task_size_range_mb: tuple[float, float] = (0.16, 1.6)
     task_density_range_gcycles_per_mb: tuple[float, float] = (0.2, 2.0)
     task_deadline_range_s: tuple[float, float] = (0.2, 1.0)
+    delay_mode: str = "bestcase_slack"
+    u_slack: float = 1.5
     reward_timeout_penalty: float = 5000.0
     reward_scale: float = 1000.0
     delay_weight: float = 0.5
@@ -108,6 +110,7 @@ class TrainingConfig:
 class ExperimentConfig:
     seed: int = 42
     output_root: Path = Path(".")
+    run_feasibility_audit: bool = False
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -133,6 +136,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--distance-threshold-m", type=float, default=150.0)
     parser.add_argument("--use-mobility", type=_str_to_bool, default=True)
     parser.add_argument("--use-cpu-dynamics", type=_str_to_bool, default=True)
+    parser.add_argument("--delay-mode", choices=("li_original", "bestcase_slack"), default="bestcase_slack")
+    parser.add_argument("--u-slack", type=float, default=1.5)
 
     parser.add_argument("--critic-type", choices=("pgcn", "mlp", "set"), default="pgcn")
     parser.add_argument("--use-role", type=_str_to_bool, default=True)
@@ -162,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-obs-scaling", type=_str_to_bool, default=True)
     parser.add_argument("--use-reward-scaling", type=_str_to_bool, default=True)
     parser.add_argument("--save-every-episodes", type=int, default=100)
+    parser.add_argument("--run-feasibility-audit", type=_str_to_bool, default=False)
     return parser
 
 
@@ -174,6 +180,8 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         distance_threshold_m=args.distance_threshold_m,
         use_mobility=args.use_mobility,
         use_cpu_dynamics=args.use_cpu_dynamics,
+        delay_mode=args.delay_mode,
+        u_slack=args.u_slack,
     )
     model = ModelConfig(
         critic_type=args.critic_type,
@@ -209,6 +217,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
     return ExperimentConfig(
         seed=args.seed,
         output_root=args.output_root,
+        run_feasibility_audit=args.run_feasibility_audit,
         environment=env,
         model=model,
         training=training,
@@ -230,6 +239,7 @@ def build_config_from_dict(payload: dict[str, Any]) -> ExperimentConfig:
     return ExperimentConfig(
         seed=int(payload.get("seed", 42)),
         output_root=Path(payload.get("output_root", ".")),
+        run_feasibility_audit=bool(payload.get("run_feasibility_audit", False)),
         environment=environment,
         model=model,
         training=training,
