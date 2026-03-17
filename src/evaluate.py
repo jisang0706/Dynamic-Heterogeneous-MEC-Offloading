@@ -20,7 +20,7 @@ from src.baselines import (
     queue_aware_greedy_actions,
 )
 from src.buffer import RolloutBuffer, Transition
-from src.config import ExperimentConfig, TrainingConfig, _str_to_bool, build_config_from_dict
+from src.config import ExperimentConfig, TrainingConfig, _str_to_bool, build_config_from_dict, get_protocol_stage
 from src.environment import DynamicMECEnv
 from src.modules.role_loss import diagonal_gaussian_kl
 from src.train import PPOTrainer
@@ -59,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--distance-threshold-m", type=float, default=150.0)
     parser.add_argument("--use-mobility", type=_str_to_bool, default=True)
     parser.add_argument("--use-cpu-dynamics", type=_str_to_bool, default=True)
+    parser.add_argument("--protocol-stage", choices=("smoke", "core", "scale"), default=None)
+    parser.add_argument("--checkpoint-selection-rule", type=str, default="final_checkpoint")
     return parser
 
 
@@ -210,6 +212,7 @@ def summarize_evaluation(
         "variant_name": None if variant is None else variant.name,
         "runner_kind": policy.runner_kind,
         "checkpoint": None if policy.checkpoint_path is None else str(policy.checkpoint_path),
+        "seed": policy.config.seed,
         "episodes": len(episode_records),
         "num_agents": policy.config.environment.num_agents,
         "deterministic_policy": True,
@@ -220,6 +223,64 @@ def summarize_evaluation(
         "results_dir": str(results_dir),
         "config": policy.config.to_dict(),
     }
+
+
+def _all_finite_step_metrics(step_records: list[dict[str, Any]]) -> bool:
+    scalar_metric_keys = (
+        "joint_reward",
+        "mean_device_reward",
+        "timeout_ratio",
+        "edge_queue",
+        "delta_edge_queue",
+        "mean_local_queue",
+        "mean_task_processing_cost",
+        "mean_task_completion_delay_s",
+        "mean_distance_m",
+        "mean_cpu_ghz",
+        "mean_offloading_ratio",
+        "mean_power_ratio",
+    )
+    for record in step_records:
+        for key in scalar_metric_keys:
+            value = record.get(key)
+            if value is None or not np.isfinite(value):
+                return False
+    return True
+
+
+def _build_protocol_payload(
+    summary: dict[str, Any],
+    policy: LoadedPolicy,
+    step_records: list[dict[str, Any]],
+    protocol_stage: str | None,
+    checkpoint_selection_rule: str,
+) -> dict[str, Any]:
+    stage_spec = get_protocol_stage(protocol_stage)
+    metrics = summary["metrics"]
+    role_diagnostics_available = metrics.get("mean_role_std") is not None or metrics.get("mean_role_kl") is not None
+    protocol_payload = {
+        "stage": None if stage_spec is None else stage_spec.stage_id,
+        "checkpoint_selection_rule": checkpoint_selection_rule,
+        "stage_spec": None
+        if stage_spec is None
+        else {
+            "title": stage_spec.title,
+            "description": stage_spec.description,
+            "recommended_num_agents": list(stage_spec.recommended_num_agents),
+            "recommended_seed_count": list(stage_spec.recommended_seed_count),
+            "recommended_episodes": stage_spec.recommended_episodes,
+            "recommended_methods": list(stage_spec.recommended_methods),
+            "mandatory_checks": list(stage_spec.mandatory_checks),
+        },
+        "checks": {
+            "actor_obs_dim": policy.config.environment.actor_observation_dim,
+            "core_obs_dim": policy.config.environment.observation_dim,
+            "server_info_dim": policy.config.environment.central_observation_dim,
+            "all_finite_step_metrics": _all_finite_step_metrics(step_records),
+            "role_diagnostics_available": role_diagnostics_available,
+        },
+    }
+    return protocol_payload
 
 
 def _build_eval_config(config: ExperimentConfig) -> ExperimentConfig:
@@ -618,6 +679,13 @@ def run_evaluation(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path
     summary["trace_path"] = str(trace_path)
     summary["results_dir"] = str(results_dir)
     summary["deterministic_policy"] = bool(args.deterministic_policy)
+    summary["protocol"] = _build_protocol_payload(
+        summary=summary,
+        policy=policy,
+        step_records=step_records,
+        protocol_stage=args.protocol_stage,
+        checkpoint_selection_rule=args.checkpoint_selection_rule,
+    )
 
     _write_jsonl(trace_path, step_records)
     _write_json(summary_path, summary)

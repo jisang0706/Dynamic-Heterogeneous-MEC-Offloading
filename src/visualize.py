@@ -20,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--summary-files", type=Path, nargs="*", default=None)
     parser.add_argument("--trace-file", type=Path, default=None)
     parser.add_argument("--timeline-agent", type=int, default=0)
+    parser.add_argument("--protocol-stage", choices=("smoke", "core", "scale"), default=None)
     return parser
 
 
@@ -55,6 +56,75 @@ def load_learning_history(log_path: Path) -> list[dict[str, Any]]:
     if not log_path.exists():
         return []
     return _load_jsonl(log_path)
+
+
+def filter_summaries_by_protocol_stage(summaries: list[dict[str, Any]], protocol_stage: str | None) -> list[dict[str, Any]]:
+    if protocol_stage is None:
+        return summaries
+    return [summary for summary in summaries if summary.get("protocol", {}).get("stage") == protocol_stage]
+
+
+def aggregate_seed_summaries(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, int, str | None], list[dict[str, Any]]] = {}
+    for summary in summaries:
+        label = summary.get("variant_id") or summary.get("label", "run")
+        num_agents = int(summary.get("num_agents", 0))
+        protocol_stage = summary.get("protocol", {}).get("stage")
+        grouped.setdefault((label, num_agents, protocol_stage), []).append(summary)
+
+    metric_names = (
+        "mean_episode_joint_reward",
+        "mean_timeout_ratio",
+        "mean_task_processing_cost",
+        "mean_edge_queue",
+        "mean_local_queue",
+        "mean_role_kl",
+        "mean_role_std",
+        "mean_near_zero_sigma_fraction",
+    )
+    aggregated: list[dict[str, Any]] = []
+    for (label, num_agents, protocol_stage), items in sorted(grouped.items()):
+        seeds = [int(item.get("seed", item.get("config", {}).get("seed", -1))) for item in items]
+        checkpoint_rules = sorted(
+            {
+                str(item.get("protocol", {}).get("checkpoint_selection_rule"))
+                for item in items
+                if item.get("protocol", {}).get("checkpoint_selection_rule") is not None
+            }
+        )
+        metrics: dict[str, Any] = {}
+        for metric_name in metric_names:
+            values = [
+                float(item["metrics"][metric_name])
+                for item in items
+                if item.get("metrics", {}).get(metric_name) is not None
+            ]
+            metrics[metric_name] = {
+                "mean": None if not values else float(np.mean(values)),
+                "std": None if not values else float(np.std(values)),
+            }
+        aggregated.append(
+            {
+                "label": label,
+                "variant_id": items[0].get("variant_id"),
+                "num_agents": num_agents,
+                "protocol_stage": protocol_stage,
+                "num_runs": len(items),
+                "seeds": seeds,
+                "checkpoint_selection_rules": checkpoint_rules,
+                "metrics": metrics,
+            }
+        )
+    return aggregated
+
+
+def write_seed_aggregation_report(summaries: list[dict[str, Any]], results_dir: Path) -> Path | None:
+    if not summaries:
+        return None
+    report = {"aggregated_runs": aggregate_seed_summaries(summaries)}
+    path = results_dir / "protocol_seed_aggregation.json"
+    path.write_text(json.dumps(report, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def plot_learning_curves(output_root: Path, plots_dir: Path) -> Path | None:
@@ -137,6 +207,40 @@ def plot_summary_comparison(summaries: list[dict[str, Any]], plots_dir: Path) ->
 
     fig.tight_layout()
     output_path = plots_dir / "evaluation_comparison.png"
+    fig.savefig(output_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+def plot_seed_aggregation_comparison(summaries: list[dict[str, Any]], plots_dir: Path) -> Path | None:
+    aggregated = aggregate_seed_summaries(summaries)
+    if not aggregated:
+        return None
+
+    labels = [f"{item['label']}@M{item['num_agents']}" for item in aggregated]
+    reward_mean = [item["metrics"]["mean_episode_joint_reward"]["mean"] or 0.0 for item in aggregated]
+    reward_std = [item["metrics"]["mean_episode_joint_reward"]["std"] or 0.0 for item in aggregated]
+    timeout_mean = [item["metrics"]["mean_timeout_ratio"]["mean"] or 0.0 for item in aggregated]
+    timeout_std = [item["metrics"]["mean_timeout_ratio"]["std"] or 0.0 for item in aggregated]
+    queue_mean = [item["metrics"]["mean_edge_queue"]["mean"] or 0.0 for item in aggregated]
+    queue_std = [item["metrics"]["mean_edge_queue"]["std"] or 0.0 for item in aggregated]
+
+    x = np.arange(len(aggregated))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    axes[0].bar(x, reward_mean, yerr=reward_std, color="#c44e52", capsize=4)
+    axes[0].set_title("Reward Mean ± Std")
+    axes[0].set_xticks(x, labels, rotation=45)
+
+    axes[1].bar(x, timeout_mean, yerr=timeout_std, color="#4c72b0", capsize=4)
+    axes[1].set_title("Timeout Mean ± Std")
+    axes[1].set_xticks(x, labels, rotation=45)
+
+    axes[2].bar(x, queue_mean, yerr=queue_std, color="#55a868", capsize=4)
+    axes[2].set_title("Edge Queue Mean ± Std")
+    axes[2].set_xticks(x, labels, rotation=45)
+
+    fig.tight_layout()
+    output_path = plots_dir / "seed_aggregation_comparison.png"
     fig.savefig(output_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
     return output_path
@@ -328,15 +432,21 @@ def generate_plots(
     summary_files: list[Path] | None = None,
     trace_file: Path | None = None,
     timeline_agent: int = 0,
+    protocol_stage: str | None = None,
 ) -> list[Path]:
     plots_dir.mkdir(parents=True, exist_ok=True)
-    summaries = load_evaluation_summaries(results_dir, summary_files=summary_files)
+    summaries = filter_summaries_by_protocol_stage(
+        load_evaluation_summaries(results_dir, summary_files=summary_files),
+        protocol_stage=protocol_stage,
+    )
     resolved_trace = discover_trace_file(results_dir) if trace_file is None else trace_file
 
     generated = []
+    write_seed_aggregation_report(summaries, results_dir)
     for plot_path in (
         plot_learning_curves(output_root, plots_dir),
         plot_summary_comparison(summaries, plots_dir),
+        plot_seed_aggregation_comparison(summaries, plots_dir),
         plot_identifiability_comparison(summaries, plots_dir),
         plot_posterior_uncertainty_comparison(summaries, plots_dir),
         plot_c1_decomposition(summaries, plots_dir),
@@ -369,6 +479,7 @@ def main() -> None:
         summary_files=args.summary_files,
         trace_file=args.trace_file,
         timeline_agent=args.timeline_agent,
+        protocol_stage=args.protocol_stage,
     )
     print(f"generated_plots={len(generated)} plots_dir={plots_dir}")
     for path in generated:

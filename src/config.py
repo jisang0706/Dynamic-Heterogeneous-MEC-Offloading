@@ -15,6 +15,68 @@ def _str_to_bool(value: str) -> bool:
     raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
 
 
+@dataclass(frozen=True, slots=True)
+class ProtocolStageSpec:
+    stage_id: str
+    title: str
+    description: str
+    recommended_num_agents: tuple[int, ...]
+    recommended_seed_count: tuple[int, int]
+    recommended_episodes: str
+    recommended_methods: tuple[str, ...]
+    mandatory_checks: tuple[str, ...] = ()
+    checkpoint_selection_rule: str = "final_checkpoint"
+
+
+PROTOCOL_STAGE_REGISTRY: dict[str, ProtocolStageSpec] = {
+    "smoke": ProtocolStageSpec(
+        stage_id="smoke",
+        title="Smoke",
+        description="Validate plumbing, numerics, and observation contracts before long runs.",
+        recommended_num_agents=(5,),
+        recommended_seed_count=(1, 1),
+        recommended_episodes="50-100",
+        recommended_methods=("B1", "B3", "B4", "B6", "A1", "QAG"),
+        mandatory_checks=(
+            "actor_obs=16",
+            "core_obs=14",
+            "server_info=3",
+            "finite_losses_rewards_queues",
+            "qag_runs",
+            "role_sigma_logged",
+        ),
+    ),
+    "core": ProtocolStageSpec(
+        stage_id="core",
+        title="Core",
+        description="Main technical comparison stage for publication-grade plots.",
+        recommended_num_agents=(5, 10),
+        recommended_seed_count=(3, 3),
+        recommended_episodes="full_training_budget",
+        recommended_methods=("B1", "B2", "B3", "B4", "B5", "B6", "A1", "A2", "A6A", "A6B", "QAG"),
+    ),
+    "scale": ProtocolStageSpec(
+        stage_id="scale",
+        title="Scale",
+        description="Stress-test larger agent counts after the core stage is stable.",
+        recommended_num_agents=(15, 20),
+        recommended_seed_count=(3, 5),
+        recommended_episodes="full_training_budget",
+        recommended_methods=("B1", "B3", "B6", "A1", "QAG"),
+    ),
+}
+
+
+def get_protocol_stage(stage_id: str | None) -> ProtocolStageSpec | None:
+    if stage_id is None:
+        return None
+    return PROTOCOL_STAGE_REGISTRY.get(stage_id.lower())
+
+
+def list_protocol_stages() -> list[ProtocolStageSpec]:
+    return list(PROTOCOL_STAGE_REGISTRY.values())
+
+
 @dataclass(slots=True)
 class EnvironmentConfig:
     num_agents: int = 5
