@@ -16,6 +16,7 @@ class SmokeRunSummary:
     last_value: float
     critic_type: str
     last_l_i_loss: float | None = None
+    last_l_var_loss: float | None = None
 
 
 @dataclass(slots=True)
@@ -27,6 +28,10 @@ class TrainingUpdateSummary:
     critic_loss: float
     entropy: float
     l_i_loss: float | None = None
+    l_var_loss: float | None = None
+    role_mu_var_per_dim: list[float] | None = None
+    role_sigma_mean_per_dim: list[float] | None = None
+    near_zero_sigma_fraction: float | None = None
 
 
 @dataclass(slots=True)
@@ -42,6 +47,7 @@ class TrainingRunSummary:
     last_critic_loss: float | None = None
     last_entropy: float | None = None
     last_l_i_loss: float | None = None
+    last_l_var_loss: float | None = None
 
 
 def _load_training_components() -> dict[str, Any]:
@@ -55,7 +61,16 @@ def _load_training_components() -> dict[str, Any]:
 
     from src.buffer import RolloutBuffer, Transition
     from src.environment import DynamicMECEnv
-    from src.modules import GraphBuilder, RoleEncoder, TrajectoryEncoder, role_diversity_loss, role_identifiability_loss, to_pyg_batch
+    from src.modules import (
+        GraphBuilder,
+        RoleEncoder,
+        TrajectoryEncoder,
+        role_diversity_loss,
+        role_identifiability_loss,
+        role_posterior_diagnostics,
+        role_variance_floor_loss,
+        to_pyg_batch,
+    )
     from src.networks import MLPCritic, MultiAgentRoleConditionedActor, PGCNCritic, SetCritic
     from src.utils import ObservationScaler, RewardScaler, set_seed
 
@@ -75,6 +90,8 @@ def _load_training_components() -> dict[str, Any]:
         "PGCNCritic": PGCNCritic,
         "SetCritic": SetCritic,
         "role_identifiability_loss": role_identifiability_loss,
+        "role_posterior_diagnostics": role_posterior_diagnostics,
+        "role_variance_floor_loss": role_variance_floor_loss,
         "set_seed": set_seed,
         "to_pyg_batch": to_pyg_batch,
     }
@@ -152,6 +169,8 @@ class PPOTrainer:
         self.critic = build_critic(config, self.components).to(self.device)
         self.role_diversity_loss = self.components["role_diversity_loss"]
         self.role_identifiability_loss = self.components["role_identifiability_loss"]
+        self.role_posterior_diagnostics = self.components["role_posterior_diagnostics"]
+        self.role_variance_floor_loss = self.components["role_variance_floor_loss"]
 
         actor_modules = [self.actor]
         if self.role_encoder is not None:
@@ -255,6 +274,10 @@ class PPOTrainer:
             "critic_loss": summary.critic_loss,
             "entropy": summary.entropy,
             "l_i_loss": summary.l_i_loss,
+            "l_var_loss": summary.l_var_loss,
+            "role_mu_var_per_dim": summary.role_mu_var_per_dim,
+            "role_sigma_mean_per_dim": summary.role_sigma_mean_per_dim,
+            "near_zero_sigma_fraction": summary.near_zero_sigma_fraction,
         }
         self.update_history.append(record)
         if self.update_log_path is not None:
@@ -326,6 +349,20 @@ class PPOTrainer:
             traj_mu=traj_mu,
             traj_std=traj_sigma,
         )
+
+    def _compute_role_diagnostics(self, role_mu: Any, role_sigma: Any | None) -> dict[str, Any] | None:
+        if role_sigma is None:
+            return None
+        diagnostics = self.role_posterior_diagnostics(
+            role_mu=role_mu,
+            role_std=role_sigma,
+            sigma_floor=self.config.training.sigma_floor,
+        )
+        return {
+            "role_mu_var_per_dim": diagnostics["role_mu_var_per_dim"].detach().cpu(),
+            "role_sigma_mean_per_dim": diagnostics["role_sigma_mean_per_dim"].detach().cpu(),
+            "near_zero_sigma_fraction": float(diagnostics["near_zero_sigma_fraction"].item()),
+        }
 
     def collect_rollouts(
         self,
@@ -443,6 +480,10 @@ class PPOTrainer:
         critic_losses: list[float] = []
         entropies: list[float] = []
         l_i_losses: list[float] = []
+        l_var_losses: list[float] = []
+        role_mu_var_history: list[Any] = []
+        role_sigma_mean_history: list[Any] = []
+        near_zero_sigma_history: list[float] = []
 
         for _ in range(self.config.training.ppo_epochs):
             permutation = self.torch.randperm(num_steps, device=self.device)
@@ -457,7 +498,7 @@ class PPOTrainer:
                 advantage = gae_batch["advantage"][step_indices]
                 returns = gae_batch["return"][step_indices]
 
-                role_mu, _ = self._actor_role_posterior(actor_obs)
+                role_mu, role_sigma = self._actor_role_posterior(actor_obs)
                 log_prob, entropy, _, _ = self.actor.evaluate_actions(
                     actor_obs,
                     action,
@@ -480,6 +521,15 @@ class PPOTrainer:
                     if computed_l_i is not None:
                         l_i_loss = computed_l_i
                         l_i_losses.append(float(l_i_loss.item()))
+                l_var_loss = actor_obs.new_tensor(0.0)
+                diagnostics = self._compute_role_diagnostics(role_mu, role_sigma)
+                if role_sigma is not None:
+                    l_var_loss = self.role_variance_floor_loss(role_sigma, self.config.training.sigma_floor)
+                    l_var_losses.append(float(l_var_loss.item()))
+                if diagnostics is not None:
+                    role_mu_var_history.append(diagnostics["role_mu_var_per_dim"])
+                    role_sigma_mean_history.append(diagnostics["role_sigma_mean_per_dim"])
+                    near_zero_sigma_history.append(diagnostics["near_zero_sigma_fraction"])
                 l_d_loss = actor_obs.new_tensor(0.0)
                 if self.config.model.use_role and self.config.model.use_l_d_simple:
                     flat_role_mu = role_mu.reshape(-1, role_mu.shape[-1])
@@ -489,6 +539,7 @@ class PPOTrainer:
                     policy_loss
                     - self.config.training.entropy_coeff * entropy_bonus
                     + self.config.training.l_i_coeff * l_i_loss
+                    + self.config.training.lambda_var * l_var_loss
                     + self.config.training.l_d_coeff * l_d_loss
                 )
                 self.actor_optimizer.zero_grad()
@@ -518,12 +569,23 @@ class PPOTrainer:
             critic_loss=sum(critic_losses) / max(len(critic_losses), 1),
             entropy=sum(entropies) / max(len(entropies), 1),
             l_i_loss=(sum(l_i_losses) / len(l_i_losses)) if l_i_losses else None,
+            l_var_loss=(sum(l_var_losses) / len(l_var_losses)) if l_var_losses else None,
+            role_mu_var_per_dim=(
+                self.torch.stack(role_mu_var_history, dim=0).mean(dim=0).tolist() if role_mu_var_history else None
+            ),
+            role_sigma_mean_per_dim=(
+                self.torch.stack(role_sigma_mean_history, dim=0).mean(dim=0).tolist() if role_sigma_mean_history else None
+            ),
+            near_zero_sigma_fraction=(
+                sum(near_zero_sigma_history) / len(near_zero_sigma_history) if near_zero_sigma_history else None
+            ),
         )
 
     def run_smoke_rollout(self) -> SmokeRunSummary:
         buffer, _, _ = self.collect_rollouts(num_episodes=1, max_steps=self.config.training.smoke_steps)
         last_transition_value = 0.0 if len(buffer) == 0 else float(buffer.transitions[-1].value or 0.0)
         last_l_i_loss = None
+        last_l_var_loss = None
         if self.config.model.use_role and self.config.model.use_l_i and len(buffer) > 0:
             trajectory_batch = buffer.build_agent_trajectory_batch(
                 window_size=self.config.training.trajectory_window,
@@ -535,6 +597,15 @@ class PPOTrainer:
             computed_l_i = self._compute_l_i_loss(trajectory_batch)
             if computed_l_i is not None:
                 last_l_i_loss = float(computed_l_i.item())
+        if self.config.model.use_role and self.role_encoder is not None and len(buffer) > 0:
+            batch = buffer.as_tensors(device=self.device)
+            flat_actor_obs = batch["actor_obs"].reshape(-1, batch["actor_obs"].shape[-1])
+            with self.torch.no_grad():
+                _, role_sigma = self.role_encoder(flat_actor_obs)
+                if role_sigma is not None:
+                    last_l_var_loss = float(
+                        self.role_variance_floor_loss(role_sigma, self.config.training.sigma_floor).item()
+                    )
 
         return SmokeRunSummary(
             steps=len(buffer),
@@ -543,6 +614,7 @@ class PPOTrainer:
             last_value=last_transition_value,
             critic_type=self.config.model.critic_type,
             last_l_i_loss=last_l_i_loss,
+            last_l_var_loss=last_l_var_loss,
         )
 
     def train(self) -> TrainingRunSummary:
@@ -588,6 +660,7 @@ class PPOTrainer:
             last_critic_loss=None if last_update is None else last_update.critic_loss,
             last_entropy=None if last_update is None else last_update.entropy,
             last_l_i_loss=None if last_update is None else last_update.l_i_loss,
+            last_l_var_loss=None if last_update is None else last_update.l_var_loss,
         )
 
 
@@ -620,6 +693,7 @@ def run_smoke_rollout(config: ExperimentConfig) -> SmokeRunSummary:
             last_value=summary.last_value,
             critic_type=summary.critic_type,
             last_l_i_loss=summary.last_l_i_loss,
+            last_l_var_loss=None,
         )
     if variant.runner_kind == "fixed":
         fixed_summary = run_fixed_policy_baseline(resolved_config, variant.variant_id, num_episodes=1)
@@ -630,6 +704,7 @@ def run_smoke_rollout(config: ExperimentConfig) -> SmokeRunSummary:
             last_value=0.0,
             critic_type=variant.variant_id.lower(),
             last_l_i_loss=None,
+            last_l_var_loss=None,
         )
     if variant.runner_kind == "external":
         if not li_original_available():
@@ -675,6 +750,7 @@ def run_training(config: ExperimentConfig) -> TrainingRunSummary:
             last_critic_loss=summary.last_critic_loss,
             last_entropy=summary.last_entropy,
             last_l_i_loss=summary.last_l_i_loss,
+            last_l_var_loss=None,
         )
     if variant.runner_kind == "fixed":
         fixed_summary = run_fixed_policy_baseline(resolved_config, variant.variant_id)
@@ -690,6 +766,7 @@ def run_training(config: ExperimentConfig) -> TrainingRunSummary:
             last_critic_loss=None,
             last_entropy=None,
             last_l_i_loss=None,
+            last_l_var_loss=None,
         )
     if variant.runner_kind == "external":
         if not li_original_available():
@@ -711,6 +788,7 @@ def main() -> None:
             f"last_actor_loss={summary.last_actor_loss if summary.last_actor_loss is not None else 'n/a'} "
             f"last_critic_loss={summary.last_critic_loss if summary.last_critic_loss is not None else 'n/a'} "
             f"last_l_i_loss={summary.last_l_i_loss if summary.last_l_i_loss is not None else 'n/a'} "
+            f"last_l_var_loss={summary.last_l_var_loss if summary.last_l_var_loss is not None else 'n/a'} "
             f"checkpoint={summary.last_checkpoint_path if summary.last_checkpoint_path is not None else 'n/a'}"
         )
         return
@@ -720,7 +798,8 @@ def main() -> None:
         f"smoke_run critic={summary.critic_type} steps={summary.steps} "
         f"mean_reward={summary.mean_reward:.4f} mean_joint_reward={summary.mean_joint_reward:.4f} "
         f"last_value={summary.last_value:.4f} "
-        f"last_l_i_loss={summary.last_l_i_loss if summary.last_l_i_loss is not None else 'n/a'}"
+        f"last_l_i_loss={summary.last_l_i_loss if summary.last_l_i_loss is not None else 'n/a'} "
+        f"last_l_var_loss={summary.last_l_var_loss if summary.last_l_var_loss is not None else 'n/a'}"
     )
 
 

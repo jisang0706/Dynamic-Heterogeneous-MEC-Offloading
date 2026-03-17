@@ -6,7 +6,14 @@ import numpy as np
 import torch
 
 from src.buffer import RolloutBuffer, Transition
-from src.modules import RoleEncoder, TrajectoryEncoder, role_diversity_loss, role_identifiability_loss
+from src.modules import (
+    RoleEncoder,
+    TrajectoryEncoder,
+    role_diversity_loss,
+    role_identifiability_loss,
+    role_posterior_diagnostics,
+    role_variance_floor_loss,
+)
 
 
 class Task4RoleModuleTests(unittest.TestCase):
@@ -38,6 +45,23 @@ class Task4RoleModuleTests(unittest.TestCase):
         loss = role_identifiability_loss(mu, sigma, mu, sigma)
 
         self.assertAlmostEqual(float(loss.item()), 0.0, places=6)
+
+    def test_role_variance_floor_loss_penalizes_small_sigma(self) -> None:
+        sigma = torch.tensor([[0.01, 0.05, 0.10]], dtype=torch.float32)
+
+        loss = role_variance_floor_loss(sigma, sigma_floor=0.05)
+
+        self.assertGreater(float(loss.item()), 0.0)
+
+    def test_role_posterior_diagnostics_report_expected_shapes(self) -> None:
+        role_mu = torch.tensor([[0.0, 1.0, 2.0], [0.5, 1.5, 1.0]], dtype=torch.float32)
+        role_sigma = torch.tensor([[0.01, 0.10, 0.20], [0.02, 0.30, 0.40]], dtype=torch.float32)
+
+        diagnostics = role_posterior_diagnostics(role_mu, role_sigma, sigma_floor=0.05)
+
+        self.assertEqual(tuple(diagnostics["role_mu_var_per_dim"].shape), (3,))
+        self.assertEqual(tuple(diagnostics["role_sigma_mean_per_dim"].shape), (3,))
+        self.assertGreater(float(diagnostics["near_zero_sigma_fraction"].item()), 0.0)
 
     def test_rollout_buffer_builds_agent_trajectory_windows(self) -> None:
         buffer = RolloutBuffer()

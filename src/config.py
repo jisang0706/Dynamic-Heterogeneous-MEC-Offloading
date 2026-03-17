@@ -98,6 +98,8 @@ class TrainingConfig:
     entropy_coeff: float = 0.01
     l_i_coeff: float = 1e-4
     l_d_coeff: float = 1e-3
+    lambda_var: float = 1e-5
+    sigma_floor: float = 0.05
     gradient_clip: float = 2.0
     update_every_episodes: int = 4
     ppo_epochs: int = 4
@@ -161,6 +163,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--entropy-coeff", type=float, default=0.01)
     parser.add_argument("--l-i-coeff", type=float, default=1e-4)
     parser.add_argument("--l-d-coeff", type=float, default=1e-3)
+    parser.add_argument("--lambda-var", type=float, default=1e-5)
+    parser.add_argument("--sigma-floor", type=float, default=0.05)
     parser.add_argument("--gradient-clip", type=float, default=2.0)
     parser.add_argument("--update-every-episodes", type=int, default=4)
     parser.add_argument("--ppo-epochs", type=int, default=4)
@@ -207,6 +211,8 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         entropy_coeff=args.entropy_coeff,
         l_i_coeff=args.l_i_coeff,
         l_d_coeff=args.l_d_coeff,
+        lambda_var=args.lambda_var,
+        sigma_floor=args.sigma_floor,
         gradient_clip=args.gradient_clip,
         update_every_episodes=args.update_every_episodes,
         ppo_epochs=args.ppo_epochs,

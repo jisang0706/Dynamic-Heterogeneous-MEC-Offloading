@@ -141,6 +141,8 @@ class Task6TrainingPipelineTests(unittest.TestCase):
                 ppo_clip=0.1,
                 entropy_coeff=0.01,
                 l_i_coeff=1e-4,
+                lambda_var=1e-5,
+                sigma_floor=0.05,
                 gradient_clip=2.0,
                 update_every_episodes=1,
                 ppo_epochs=1,
@@ -162,6 +164,14 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         self.assertTrue(np.isfinite(update.critic_loss))
         self.assertTrue(np.isfinite(update.entropy))
         self.assertTrue(update.l_i_loss is None or np.isfinite(update.l_i_loss))
+        self.assertTrue(update.l_var_loss is None or np.isfinite(update.l_var_loss))
+        if update.role_mu_var_per_dim is not None:
+            self.assertEqual(len(update.role_mu_var_per_dim), 3)
+        if update.role_sigma_mean_per_dim is not None:
+            self.assertEqual(len(update.role_sigma_mean_per_dim), 3)
+        self.assertTrue(
+            update.near_zero_sigma_fraction is None or np.isfinite(update.near_zero_sigma_fraction)
+        )
 
 
 if __name__ == "__main__":

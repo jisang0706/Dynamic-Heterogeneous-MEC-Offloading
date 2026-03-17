@@ -196,6 +196,7 @@ def summarize_evaluation(
         "mean_role_action_distance_correlation",
         "mean_role_std",
         "mean_role_variance",
+        "mean_near_zero_sigma_fraction",
     )
     for metric_name in optional_metric_names:
         values = [float(item[metric_name]) for item in episode_records if item.get(metric_name) is not None]
@@ -442,6 +443,7 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
     device_records: list[dict[str, float]] = []
     role_std_means: list[float] = []
     role_var_means: list[float] = []
+    near_zero_sigma_fractions: list[float] = []
     role_action_corrs: list[float] = []
 
     for episode_idx in range(episodes):
@@ -451,6 +453,7 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
         episode_costs: list[float] = []
         episode_edge_queues: list[float] = []
         episode_role_action_corrs: list[float] = []
+        episode_near_zero_sigma_fractions: list[float] = []
         rollout_buffer = RolloutBuffer()
 
         for step_idx in range(policy.config.environment.episode_length):
@@ -497,6 +500,9 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
             if role_sigma is not None:
                 role_std_means.append(float(np.mean(role_sigma)))
                 role_var_means.append(float(np.mean(np.square(role_sigma))))
+                near_zero_fraction = float(np.mean(role_sigma < policy.config.training.sigma_floor))
+                near_zero_sigma_fractions.append(near_zero_fraction)
+                episode_near_zero_sigma_fractions.append(near_zero_fraction)
             role_action_corr = _pairwise_distance_correlation(role_mu if role_mu is not None else None, env_action)
             if role_action_corr is not None:
                 role_action_corrs.append(role_action_corr)
@@ -575,6 +581,7 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
                 "mean_task_processing_cost": float(np.mean(episode_costs)) if episode_costs else 0.0,
                 "mean_edge_queue": float(np.mean(episode_edge_queues)) if episode_edge_queues else 0.0,
                 "mean_role_action_distance_correlation": _mean_or_none(episode_role_action_corrs),
+                "mean_near_zero_sigma_fraction": _mean_or_none(episode_near_zero_sigma_fractions),
                 **role_metrics,
             }
         )
@@ -591,6 +598,7 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
     summary["metrics"]["mean_role_action_distance_correlation"] = _mean_or_none(role_action_corrs)
     summary["metrics"]["mean_role_std"] = _mean_or_none(role_std_means)
     summary["metrics"]["mean_role_variance"] = _mean_or_none(role_var_means)
+    summary["metrics"]["mean_near_zero_sigma_fraction"] = _mean_or_none(near_zero_sigma_fractions)
     return summary, step_records
 
 
