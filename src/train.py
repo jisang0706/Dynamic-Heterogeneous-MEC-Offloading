@@ -85,7 +85,10 @@ def build_critic(config: ExperimentConfig, components: dict[str, Any]) -> Any:
     MLPCritic = components["MLPCritic"]
     SetCritic = components["SetCritic"]
     if config.model.critic_type == "pgcn":
-        return PGCNCritic(node_dim=config.environment.observation_dim)
+        return PGCNCritic(
+            device_dim=config.environment.observation_dim,
+            server_dim=config.environment.central_observation_dim,
+        )
     if config.model.critic_type == "mlp":
         return MLPCritic(
             obs_dim=config.environment.observation_dim,
@@ -93,8 +96,8 @@ def build_critic(config: ExperimentConfig, components: dict[str, Any]) -> Any:
             central_obs_dim=config.environment.central_observation_dim,
         )
     return SetCritic(
-        obs_dim=config.environment.observation_dim,
-        central_obs_dim=config.environment.central_observation_dim,
+        device_dim=config.environment.observation_dim,
+        server_dim=config.environment.central_observation_dim,
     )
 
 
@@ -285,24 +288,19 @@ class PPOTrainer:
     def _critic_values(self, device_obs: Any, server_obs: Any, positions: Any) -> Any:
         if self.config.model.critic_type == "pgcn":
             if device_obs.dim() == 2:
-                graph = self.graph_builder.build(device_obs=device_obs, server_obs=server_obs, positions=positions)
-                return self.critic(graph).squeeze(-1)
+                graph = self.graph_builder.build(positions=positions)
+                return self.critic(device_obs, server_obs, graph=graph).squeeze(-1)
 
             graphs = [
-                self.graph_builder.build(
-                    device_obs=device_obs[step_idx],
-                    server_obs=server_obs[step_idx],
-                    positions=positions[step_idx],
-                )
+                self.graph_builder.build(positions=positions[step_idx])
                 for step_idx in range(device_obs.shape[0])
             ]
             if self.critic.use_pyg:
                 batch_graph = self.components["to_pyg_batch"](graphs).to(self.device)
-                return self.critic(batch_graph).squeeze(-1)
+                return self.critic(device_obs, server_obs, graph=batch_graph).squeeze(-1)
 
-            stacked_x = self.torch.stack([graph.x for graph in graphs], dim=0)
             stacked_adjacency = self.torch.stack([graph.adjacency for graph in graphs], dim=0)
-            return self.critic(stacked_x, adjacency=stacked_adjacency).squeeze(-1)
+            return self.critic(device_obs, server_obs, adjacency=stacked_adjacency).squeeze(-1)
 
         return self.critic(device_obs, server_obs).squeeze(-1)
 

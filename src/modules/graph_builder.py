@@ -8,15 +8,15 @@ import torch
 
 @dataclass(slots=True)
 class GraphBatch:
-    x: torch.Tensor
     adjacency: torch.Tensor
     edge_index: torch.Tensor
     pairwise_distances: torch.Tensor | None = None
     server_index: int = -1
+    num_devices: int = 0
 
     @property
-    def node_features(self) -> torch.Tensor:
-        return self.x
+    def num_nodes(self) -> int:
+        return self.num_devices + 1
 
     def to_pyg_data(self) -> object:
         try:
@@ -27,11 +27,12 @@ class GraphBatch:
             ) from exc
 
         return Data(
-            x=self.x,
             edge_index=self.edge_index,
             adjacency=self.adjacency,
             pairwise_distances=self.pairwise_distances,
             server_index=self.server_index,
+            num_devices=self.num_devices,
+            num_nodes=self.num_nodes,
         )
 
 
@@ -50,26 +51,16 @@ class GraphBuilder:
 
     def build(
         self,
-        device_obs: torch.Tensor,
-        server_obs: torch.Tensor,
         positions: torch.Tensor | None = None,
     ) -> GraphBatch:
-        if device_obs.dim() != 2:
-            raise ValueError(f"device_obs must be [num_devices, obs_dim], got {tuple(device_obs.shape)}")
-        if device_obs.shape[0] != self.num_devices:
-            raise ValueError(
-                f"device_obs first dimension must match num_devices={self.num_devices}, got {device_obs.shape[0]}"
-            )
-        padded_server = self._pad_server_obs(server_obs, target_dim=device_obs.shape[-1])
-        node_features = torch.cat([device_obs, padded_server.unsqueeze(0)], dim=0)
-
-        adjacency = self._star_adjacency.to(device=device_obs.device, dtype=device_obs.dtype).clone()
-        edge_index = self._star_edge_index.to(device=device_obs.device)
+        topology_device = self._star_adjacency.device if positions is None else positions.device
+        adjacency = self._star_adjacency.to(device=topology_device).clone()
+        edge_index = self._star_edge_index.to(device=topology_device).clone()
         pairwise_distances = None
 
         if self.graph_type == "star_proximity":
-            pairwise_distances = self._pairwise_distances(positions=positions, device_obs=device_obs)
-            proximity_edge_index = self._build_proximity_edge_index(pairwise_distances, device=device_obs.device)
+            pairwise_distances = self._pairwise_distances(positions=positions)
+            proximity_edge_index = self._build_proximity_edge_index(pairwise_distances, device=adjacency.device)
             if proximity_edge_index.numel() > 0:
                 edge_index = torch.cat([edge_index, proximity_edge_index], dim=1)
                 adjacency = self._augment_adjacency_with_proximity(
@@ -78,11 +69,11 @@ class GraphBuilder:
                 )
 
         return GraphBatch(
-            x=node_features,
             adjacency=adjacency,
             edge_index=edge_index,
             pairwise_distances=pairwise_distances,
             server_index=self.server_index,
+            num_devices=self.num_devices,
         )
 
     def _build_star_edge_index(self) -> torch.Tensor:
@@ -96,14 +87,15 @@ class GraphBuilder:
         adjacency[self.server_index, : self.num_devices] = 1.0
         return adjacency
 
-    def _pairwise_distances(self, positions: torch.Tensor | None, device_obs: torch.Tensor) -> torch.Tensor:
+    def _pairwise_distances(self, positions: torch.Tensor | None) -> torch.Tensor:
         if positions is None:
             raise ValueError("positions must be provided when graph_type='star_proximity'")
         if positions.dim() != 2 or positions.shape != (self.num_devices, 2):
             raise ValueError(
                 f"positions must have shape ({self.num_devices}, 2), got {tuple(positions.shape)}"
             )
-        return torch.cdist(positions.to(device=device_obs.device, dtype=device_obs.dtype), positions.to(device=device_obs.device, dtype=device_obs.dtype))
+        positions = positions.to(dtype=torch.float32)
+        return torch.cdist(positions, positions)
 
     def _build_proximity_edge_index(self, pairwise_distances: torch.Tensor, device: torch.device) -> torch.Tensor:
         threshold_mask = (pairwise_distances < self.distance_threshold_m) & (~torch.eye(self.num_devices, dtype=torch.bool, device=device))
@@ -120,15 +112,6 @@ class GraphBuilder:
         )
         adjacency[: self.num_devices, : self.num_devices].fill_diagonal_(1.0)
         return adjacency
-
-    @staticmethod
-    def _pad_server_obs(server_obs: torch.Tensor, target_dim: int) -> torch.Tensor:
-        if server_obs.dim() != 1:
-            raise ValueError(f"server_obs must be [central_obs_dim], got {tuple(server_obs.shape)}")
-        if server_obs.numel() > target_dim:
-            raise ValueError("server_obs cannot be longer than the target node feature dimension")
-        padding = torch.zeros(target_dim - server_obs.numel(), dtype=server_obs.dtype, device=server_obs.device)
-        return torch.cat([server_obs, padding], dim=0)
 
 
 def to_pyg_batch(graphs: Sequence[GraphBatch]) -> object:
