@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -172,6 +174,66 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         self.assertTrue(
             update.near_zero_sigma_fraction is None or np.isfinite(update.near_zero_sigma_fraction)
         )
+
+    def test_trainer_resume_restores_checkpoint_state_and_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config = ExperimentConfig(
+                seed=17,
+                output_root=root,
+                environment=EnvironmentConfig(num_agents=5, episode_length=2, graph_type="star"),
+                model=ModelConfig(critic_type="mlp", use_role=False, use_l_i=False, actor_type="shared"),
+                training=TrainingConfig(run_mode="train", total_episodes=2, update_every_episodes=1),
+            )
+            trainer = PPOTrainer(config)
+            trainer.episode_history = [{"episode": 1, "joint_reward": -10.0, "steps": 2}]
+            trainer.update_history = [
+                {
+                    "update": 1,
+                    "episodes_completed": 1,
+                    "steps": 2,
+                    "mean_joint_reward": -10.0,
+                    "mean_scaled_joint_reward": -1.0,
+                    "actor_loss": 0.1,
+                    "critic_loss": 0.2,
+                    "entropy": 0.3,
+                    "l_i_loss": None,
+                    "l_var_loss": None,
+                    "role_mu_var_per_dim": None,
+                    "role_sigma_mean_per_dim": None,
+                    "near_zero_sigma_fraction": None,
+                }
+            ]
+            trainer.episodes_completed = 1
+            trainer.updates_completed = 1
+            checkpoint_path = trainer._save_checkpoint(1, 1, suffix="latest")
+
+            resumed_config = ExperimentConfig(
+                seed=17,
+                output_root=root,
+                environment=EnvironmentConfig(num_agents=5, episode_length=2, graph_type="star"),
+                model=ModelConfig(critic_type="mlp", use_role=False, use_l_i=False, actor_type="shared"),
+                training=TrainingConfig(
+                    run_mode="train",
+                    total_episodes=2,
+                    update_every_episodes=1,
+                    resume_from=checkpoint_path,
+                ),
+            )
+            resumed_trainer = PPOTrainer(resumed_config)
+
+            self.assertEqual(resumed_trainer.episodes_completed, 1)
+            self.assertEqual(resumed_trainer.updates_completed, 1)
+            self.assertEqual(len(resumed_trainer.episode_history), 1)
+            self.assertEqual(len(resumed_trainer.update_history), 1)
+            self.assertEqual(
+                resumed_trainer.episode_log_path.read_text(encoding="utf-8").count("\n"),
+                1,
+            )
+            self.assertEqual(
+                resumed_trainer.update_log_path.read_text(encoding="utf-8").count("\n"),
+                1,
+            )
 
 
 if __name__ == "__main__":

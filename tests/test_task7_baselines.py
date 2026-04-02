@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import torch
 
@@ -135,6 +137,74 @@ class Task7BaselineTests(unittest.TestCase):
         self.assertEqual(smoke_summary.critic_type, "ippo")
         self.assertIsInstance(train_summary, TrainingRunSummary)
         self.assertEqual(train_summary.critic_type, "ippo")
+
+    def test_ippo_trainer_resume_restores_checkpoint_state_and_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config = ExperimentConfig(
+                seed=19,
+                output_root=root,
+                environment=EnvironmentConfig(num_agents=5, episode_length=2, graph_type="star"),
+                model=ModelConfig(
+                    critic_type="mlp",
+                    use_role=False,
+                    use_l_i=False,
+                    actor_type="individual",
+                    actor_hidden_dim=200,
+                ),
+                training=TrainingConfig(run_mode="train", total_episodes=2, update_every_episodes=1),
+            )
+            trainer = IPPOTrainer(config)
+            trainer.episode_history = [{"episode": 1, "joint_reward": -5.0, "steps": 2}]
+            trainer.update_history = [
+                {
+                    "update": 1,
+                    "episodes_completed": 1,
+                    "steps": 2,
+                    "mean_joint_reward": -5.0,
+                    "mean_scaled_joint_reward": -0.5,
+                    "actor_loss": 0.1,
+                    "critic_loss": 0.2,
+                    "entropy": 0.3,
+                    "l_i_loss": None,
+                }
+            ]
+            trainer.episodes_completed = 1
+            trainer.updates_completed = 1
+            checkpoint_path = trainer._save_checkpoint(1, 1, suffix="latest")
+
+            resumed_config = ExperimentConfig(
+                seed=19,
+                output_root=root,
+                environment=EnvironmentConfig(num_agents=5, episode_length=2, graph_type="star"),
+                model=ModelConfig(
+                    critic_type="mlp",
+                    use_role=False,
+                    use_l_i=False,
+                    actor_type="individual",
+                    actor_hidden_dim=200,
+                ),
+                training=TrainingConfig(
+                    run_mode="train",
+                    total_episodes=2,
+                    update_every_episodes=1,
+                    resume_from=checkpoint_path,
+                ),
+            )
+            resumed_trainer = IPPOTrainer(resumed_config)
+
+            self.assertEqual(resumed_trainer.episodes_completed, 1)
+            self.assertEqual(resumed_trainer.updates_completed, 1)
+            self.assertEqual(len(resumed_trainer.episode_history), 1)
+            self.assertEqual(len(resumed_trainer.update_history), 1)
+            self.assertEqual(
+                resumed_trainer.episode_log_path.read_text(encoding="utf-8").count("\n"),
+                1,
+            )
+            self.assertEqual(
+                resumed_trainer.update_log_path.read_text(encoding="utf-8").count("\n"),
+                1,
+            )
 
 
 if __name__ == "__main__":

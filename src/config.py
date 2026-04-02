@@ -153,6 +153,7 @@ class ModelConfig:
 class TrainingConfig:
     run_mode: str = "smoke"
     variant_id: str | None = None
+    resume_from: str | None = None
     learning_rate: float = 4e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -219,6 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", type=float, default=4e-4)
     parser.add_argument("--run-mode", choices=("smoke", "train"), default="smoke")
     parser.add_argument("--variant-id", type=str, default=None)
+    parser.add_argument("--resume-from", type=Path, default=None)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--ppo-clip", type=float, default=0.1)
@@ -266,6 +268,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
     training = TrainingConfig(
         run_mode=args.run_mode,
         variant_id=args.variant_id,
+        resume_from=None if args.resume_from is None else str(args.resume_from),
         learning_rate=args.learning_rate,
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,

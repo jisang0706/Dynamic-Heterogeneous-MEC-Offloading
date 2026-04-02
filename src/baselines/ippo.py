@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -193,11 +194,12 @@ class IPPOTrainer:
         self.episode_log_path = None
         self.update_log_path = None
         self.last_checkpoint_path = None
+        self.episodes_completed = 0
+        self.updates_completed = 0
         if config.training.run_mode == "train":
             self.episode_log_path = config.output_root / "logs" / "episode_history_ippo.jsonl"
             self.update_log_path = config.output_root / "logs" / "update_history_ippo.jsonl"
-            self.episode_log_path.write_text("", encoding="utf-8")
-            self.update_log_path.write_text("", encoding="utf-8")
+            self._maybe_resume_training_state()
 
     def _scale_device_obs(self, device_obs: torch.Tensor, update_stats: bool) -> torch.Tensor:
         if self.device_obs_scaler is None:
@@ -227,6 +229,74 @@ class IPPOTrainer:
     def _append_json_record(self, path: Path, payload: dict[str, float | int | None]) -> None:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+
+    def _reset_training_logs(self) -> None:
+        if self.episode_log_path is not None:
+            self.episode_log_path.write_text("", encoding="utf-8")
+        if self.update_log_path is not None:
+            self.update_log_path.write_text("", encoding="utf-8")
+
+    def _rewrite_training_logs_from_history(self) -> None:
+        self._reset_training_logs()
+        if self.episode_log_path is not None:
+            for record in self.episode_history:
+                self._append_json_record(self.episode_log_path, record)
+        if self.update_log_path is not None:
+            for record in self.update_history:
+                self._append_json_record(self.update_log_path, record)
+
+    @staticmethod
+    def _torch_load_checkpoint(checkpoint_path: Path) -> dict[str, Any]:
+        try:
+            return torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        except TypeError:
+            return torch.load(checkpoint_path, map_location="cpu")
+
+    def _optimizer_to_device(self, optimizer: torch.optim.Optimizer) -> None:
+        for state in optimizer.state.values():
+            for key, value in state.items():
+                if isinstance(value, torch.Tensor):
+                    state[key] = value.to(self.device)
+
+    def _load_training_checkpoint(self, checkpoint_path: Path) -> None:
+        checkpoint = self._torch_load_checkpoint(checkpoint_path)
+        self.actor.load_state_dict(checkpoint["actor"])
+        self.critics.load_state_dict(checkpoint["critics"])
+        self.actor_optimizer.load_state_dict(checkpoint["actor_optimizer"])
+        self.critic_optimizer.load_state_dict(checkpoint["critic_optimizer"])
+        self._optimizer_to_device(self.actor_optimizer)
+        self._optimizer_to_device(self.critic_optimizer)
+
+        if checkpoint.get("device_obs_scaler") is not None and self.device_obs_scaler is not None:
+            self.device_obs_scaler.load_state_dict(checkpoint["device_obs_scaler"])
+        if checkpoint.get("server_obs_scaler") is not None and self.server_obs_scaler is not None:
+            self.server_obs_scaler.load_state_dict(checkpoint["server_obs_scaler"])
+        if checkpoint.get("reward_scalers") is not None and self.reward_scalers is not None:
+            for scaler, state in zip(self.reward_scalers, checkpoint["reward_scalers"], strict=True):
+                scaler.load_state_dict(state)
+
+        self.episode_history = [dict(record) for record in checkpoint.get("episode_history", [])]
+        self.update_history = [dict(record) for record in checkpoint.get("update_history", [])]
+        self.episodes_completed = int(checkpoint.get("episodes_completed", len(self.episode_history)))
+        self.updates_completed = int(checkpoint.get("update_index", len(self.update_history)))
+        self.last_checkpoint_path = str(checkpoint_path)
+        if self.config.training.run_mode == "train":
+            self._rewrite_training_logs_from_history()
+
+    def _maybe_resume_training_state(self) -> None:
+        if self.config.training.run_mode != "train":
+            return
+        resume_from = self.config.training.resume_from
+        if resume_from is None:
+            self._reset_training_logs()
+            self.episodes_completed = 0
+            self.updates_completed = 0
+            return
+
+        checkpoint_path = Path(resume_from)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint does not exist: {checkpoint_path}")
+        self._load_training_checkpoint(checkpoint_path)
 
     def _save_checkpoint(self, episodes_completed: int, update_index: int, suffix: str | None = None) -> str:
         checkpoint_name = (
@@ -415,16 +485,13 @@ class IPPOTrainer:
         )
 
     def train(self) -> IPPOTrainingRunSummary:
-        updates = 0
-        episodes_completed = 0
+        updates = self.updates_completed
+        episodes_completed = self.episodes_completed
         last_update: IPPOUpdateSummary | None = None
-        episode_joint_rewards: list[float] = []
-
-        episodes_remaining = self.config.training.total_episodes
+        episodes_remaining = max(self.config.training.total_episodes - episodes_completed, 0)
         while episodes_remaining > 0:
             rollout_episodes = min(self.config.training.update_every_episodes, episodes_remaining)
             buffer, last_value, batch_episode_rewards = self.collect_rollouts(rollout_episodes)
-            episode_joint_rewards.extend(batch_episode_rewards)
             for episode_offset, joint_reward in enumerate(batch_episode_rewards):
                 record = {
                     "episode": episodes_completed + episode_offset + 1,
@@ -435,8 +502,10 @@ class IPPOTrainer:
                 if self.episode_log_path is not None:
                     self._append_json_record(self.episode_log_path, record)
             episodes_completed += len(batch_episode_rewards)
+            self.episodes_completed = episodes_completed
             last_update = self.update(buffer, last_value)
             updates += 1
+            self.updates_completed = updates
             update_record = {
                 "update": updates,
                 "episodes_completed": episodes_completed,
@@ -451,27 +520,35 @@ class IPPOTrainer:
             self.update_history.append(update_record)
             if self.update_log_path is not None:
                 self._append_json_record(self.update_log_path, update_record)
+            self._save_checkpoint(episodes_completed, updates, suffix="latest")
             if (
                 self.config.training.save_every_episodes > 0
                 and episodes_completed > 0
                 and episodes_completed % self.config.training.save_every_episodes == 0
             ):
                 self._save_checkpoint(episodes_completed, updates)
-            episodes_remaining -= rollout_episodes
+            episodes_remaining = max(self.config.training.total_episodes - episodes_completed, 0)
 
         if episodes_completed > 0:
             self._save_checkpoint(episodes_completed, updates, suffix="final")
 
+        completed_episode_rewards = [
+            float(record["joint_reward"])
+            for record in self.episode_history[:episodes_completed]
+            if "joint_reward" in record
+        ]
+        last_update_record = None if not self.update_history else self.update_history[-1]
+
         return IPPOTrainingRunSummary(
-            episodes=self.config.training.total_episodes,
+            episodes=episodes_completed,
             updates=updates,
-            mean_episode_joint_reward=float(np.mean(episode_joint_rewards)) if episode_joint_rewards else 0.0,
+            mean_episode_joint_reward=float(np.mean(completed_episode_rewards)) if completed_episode_rewards else 0.0,
             critic_type="ippo",
             episode_log_path=None if self.episode_log_path is None else str(self.episode_log_path),
             update_log_path=None if self.update_log_path is None else str(self.update_log_path),
             last_checkpoint_path=self.last_checkpoint_path,
-            last_actor_loss=None if last_update is None else last_update.actor_loss,
-            last_critic_loss=None if last_update is None else last_update.critic_loss,
-            last_entropy=None if last_update is None else last_update.entropy,
+            last_actor_loss=None if last_update_record is None else float(last_update_record["actor_loss"]),
+            last_critic_loss=None if last_update_record is None else float(last_update_record["critic_loss"]),
+            last_entropy=None if last_update_record is None else float(last_update_record["entropy"]),
             last_l_i_loss=None,
         )

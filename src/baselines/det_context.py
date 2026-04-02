@@ -32,7 +32,7 @@ class DeterministicContextEncoder(nn.Module):
 
 class DeterministicContextTrainer(PPOTrainer):
     def __init__(self, config) -> None:
-        super().__init__(config)
+        super().__init__(config, enable_resume=False)
         stale_role_encoder = self.role_encoder
         self.context_encoder = DeterministicContextEncoder(
             obs_dim=config.environment.actor_observation_dim,
@@ -47,6 +47,7 @@ class DeterministicContextTrainer(PPOTrainer):
         self.actor_modules = [self.actor, self.context_encoder]
         actor_parameters = list(chain.from_iterable(module.parameters() for module in self.actor_modules))
         self.actor_optimizer = self.torch.optim.Adam(actor_parameters, lr=config.training.learning_rate)
+        self._maybe_resume_training_state()
 
     def _actor_role_posterior(self, device_obs):
         flat_obs = device_obs.reshape(-1, device_obs.shape[-1])
