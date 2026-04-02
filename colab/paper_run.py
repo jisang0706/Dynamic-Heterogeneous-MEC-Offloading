@@ -10,6 +10,10 @@ from typing import Any
 
 import torch
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from src.baselines import get_experiment_variant
 from src.config import ProtocolStageSpec, get_protocol_stage
 
@@ -457,7 +461,7 @@ def run_stage(stage_id: str, args: argparse.Namespace, repo_root: Path) -> None:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     args.workspace_root.mkdir(parents=True, exist_ok=True)
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = REPO_ROOT
 
     stage_ids = ["smoke", "core", "scale"] if args.stage == "all" else [args.stage]
     for stage_id in stage_ids:
