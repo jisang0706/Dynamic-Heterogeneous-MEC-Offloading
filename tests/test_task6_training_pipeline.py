@@ -169,6 +169,21 @@ class Task6TrainingPipelineTests(unittest.TestCase):
             self.assertEqual(len(update.role_mu_var_per_dim), 3)
         if update.role_sigma_mean_per_dim is not None:
             self.assertEqual(len(update.role_sigma_mean_per_dim), 3)
+        self.assertEqual(len(update.policy_mean_env_mean_per_dim or []), 4)
+        self.assertEqual(len(update.policy_mean_env_std_per_dim or []), 4)
+        self.assertEqual(len(update.policy_std_env_mean_per_dim or []), 4)
+        self.assertEqual(len(update.sampled_env_action_mean_per_dim or []), 4)
+        self.assertEqual(len(update.sampled_env_action_std_per_dim or []), 4)
+        self.assertTrue(
+            update.sampled_env_action_near_zero_fraction is None
+            or np.isfinite(update.sampled_env_action_near_zero_fraction)
+        )
+        self.assertTrue(
+            update.sampled_env_action_near_one_fraction is None
+            or np.isfinite(update.sampled_env_action_near_one_fraction)
+        )
+        self.assertTrue(update.non_timeout_task_fraction is None or np.isfinite(update.non_timeout_task_fraction))
+        self.assertEqual(len(update.policy_log_std_mean_per_dim or []), 4)
         self.assertTrue(
             update.near_zero_sigma_fraction is None or np.isfinite(update.near_zero_sigma_fraction)
         )

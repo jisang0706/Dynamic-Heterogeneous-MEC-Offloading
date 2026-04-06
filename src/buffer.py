@@ -23,6 +23,7 @@ class Transition:
     joint_reward: float | None = None
     scaled_joint_reward: float | None = None
     value: float | None = None
+    timeout_ratio: float | None = None
 
     @property
     def device_obs(self) -> np.ndarray:
@@ -192,6 +193,7 @@ class RolloutBuffer:
                 dtype=np.float32,
             ),
             "value": np.asarray([self._value(item) for item in self.transitions], dtype=np.float32),
+            "timeout_ratio": np.asarray([self._timeout_ratio(item) for item in self.transitions], dtype=np.float32),
             "done": np.asarray([item.done for item in self.transitions], dtype=np.float32),
         }
         return {key: torch.as_tensor(value, dtype=torch.float32, device=device) for key, value in stacked.items()}
@@ -213,6 +215,12 @@ class RolloutBuffer:
         if transition.scaled_joint_reward is not None:
             return float(transition.scaled_joint_reward)
         return RolloutBuffer._joint_reward(transition)
+
+    @staticmethod
+    def _timeout_ratio(transition: Transition) -> float:
+        if transition.timeout_ratio is not None:
+            return float(transition.timeout_ratio)
+        return 0.0
 
     @staticmethod
     def _positions(transition: Transition, position_shape: tuple[int, int]) -> np.ndarray:
