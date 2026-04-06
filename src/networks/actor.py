@@ -18,6 +18,7 @@ class RoleConditionedActor(nn.Module):
         hidden_dim: int = 128,
         use_role: bool = True,
         initial_action_std_env: float = 0.25,
+        initial_offloading_mean_env: float = 0.65,
         initial_power_mean_env: float = 0.8,
     ) -> None:
         super().__init__()
@@ -26,6 +27,8 @@ class RoleConditionedActor(nn.Module):
         self.role_dim = role_dim
         if initial_action_std_env <= 0.0:
             raise ValueError("initial_action_std_env must be positive.")
+        if not 0.0 < initial_offloading_mean_env < 1.0:
+            raise ValueError("initial_offloading_mean_env must be strictly between 0 and 1.")
         if not 0.0 < initial_power_mean_env < 1.0:
             raise ValueError("initial_power_mean_env must be strictly between 0 and 1.")
         tanh_gain = nn.init.calculate_gain("tanh")
@@ -38,6 +41,7 @@ class RoleConditionedActor(nn.Module):
         self.log_std = nn.Parameter(torch.full((action_dim,), math.log(native_std), dtype=torch.float32))
         with torch.no_grad():
             self.fc3.bias.zero_()
+            self.fc3.bias[:-1] = self._env_mean_to_native_bias(initial_offloading_mean_env)
             self.fc3.bias[-1] = self._env_mean_to_native_bias(initial_power_mean_env)
 
     @staticmethod
@@ -105,6 +109,7 @@ class MultiAgentRoleConditionedActor(nn.Module):
         hidden_dim: int = 128,
         use_role: bool = True,
         initial_action_std_env: float = 0.25,
+        initial_offloading_mean_env: float = 0.65,
         initial_power_mean_env: float = 0.8,
     ) -> None:
         super().__init__()
@@ -125,6 +130,7 @@ class MultiAgentRoleConditionedActor(nn.Module):
                 hidden_dim=hidden_dim,
                 use_role=use_role,
                 initial_action_std_env=initial_action_std_env,
+                initial_offloading_mean_env=initial_offloading_mean_env,
                 initial_power_mean_env=initial_power_mean_env,
             )
             self.actors = None
@@ -139,6 +145,7 @@ class MultiAgentRoleConditionedActor(nn.Module):
                         hidden_dim=hidden_dim,
                         use_role=use_role,
                         initial_action_std_env=initial_action_std_env,
+                        initial_offloading_mean_env=initial_offloading_mean_env,
                         initial_power_mean_env=initial_power_mean_env,
                     )
                     for _ in range(num_agents)
