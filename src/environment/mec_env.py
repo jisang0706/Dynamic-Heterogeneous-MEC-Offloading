@@ -207,13 +207,13 @@ class DynamicMECEnv:
                 [
                     flat_tasks[0] / self.config.task_size_range_mb[1],
                     flat_tasks[1] / self.config.task_density_range_gcycles_per_mb[1],
-                    flat_tasks[2] / self.config.task_deadline_range_s[1],
+                    self._scale_deadline_observation(float(flat_tasks[2])),
                     flat_tasks[3] / self.config.task_size_range_mb[1],
                     flat_tasks[4] / self.config.task_density_range_gcycles_per_mb[1],
-                    flat_tasks[5] / self.config.task_deadline_range_s[1],
+                    self._scale_deadline_observation(float(flat_tasks[5])),
                     flat_tasks[6] / self.config.task_size_range_mb[1],
                     flat_tasks[7] / self.config.task_density_range_gcycles_per_mb[1],
-                    flat_tasks[8] / self.config.task_deadline_range_s[1],
+                    self._scale_deadline_observation(float(flat_tasks[8])),
                 ],
                 dtype=np.float32,
             )
@@ -221,8 +221,8 @@ class DynamicMECEnv:
                 [
                     np.asarray(
                         [
-                            np.clip(self.local_queues[index], 0.0, self.config.queue_clip_max) / 10.0,
-                            np.clip(channel_ratio, 0.0, self.config.queue_clip_max) / 10.0,
+                            self._scale_queue_observation(float(self.local_queues[index])),
+                            self._scale_channel_observation(channel_ratio),
                         ],
                         dtype=np.float32,
                     ),
@@ -242,8 +242,8 @@ class DynamicMECEnv:
         delta_edge_queue = self.edge_queue - self.prev_edge_queue
         server_obs = np.asarray(
             [
-                np.clip(self.edge_queue, 0.0, self.config.queue_clip_max) / 10.0,
-                np.clip(delta_edge_queue, -10.0, 10.0) / 10.0,
+                self._scale_queue_observation(float(self.edge_queue)),
+                self._scale_signed_queue_delta(delta_edge_queue),
                 self.config.server_cpu_ghz / 25.0,
             ],
             dtype=np.float32,
@@ -381,6 +381,33 @@ class DynamicMECEnv:
         local_norm = local_energy_j / max(self.config.local_energy_reference_j, 1e-6)
         tx_norm = tx_energy_j / max(self.config.tx_energy_reference_j, 1e-6)
         return float(0.5 * (local_norm + tx_norm))
+
+    def _scale_queue_observation(self, queue_value: float) -> float:
+        queue_reference = max(self.config.queue_clip_max * 5.0, 100.0)
+        scaled = np.log1p(max(queue_value, 0.0)) / np.log1p(queue_reference)
+        return float(np.clip(scaled, 0.0, 2.0))
+
+    def _scale_signed_queue_delta(self, delta_queue: float) -> float:
+        delta_reference = max(self.config.queue_clip_max, 20.0)
+        scaled = np.sign(delta_queue) * np.log1p(abs(delta_queue)) / np.log1p(delta_reference)
+        return float(np.clip(scaled, -2.0, 2.0))
+
+    def _channel_ratio_reference(self) -> float:
+        device_bandwidth_hz = self.config.total_bandwidth_hz / float(self.config.num_agents)
+        noise_power_w = self.config.noise_density_w_hz * device_bandwidth_hz
+        min_distance_km = max(self.config.min_distance_m / 1000.0, 1e-6)
+        best_large_scale_gain = self.config.path_loss_kappa_linear * (min_distance_km ** (-self.config.path_loss_exp))
+        return max(best_large_scale_gain / max(noise_power_w, 1e-12), 1.0)
+
+    def _scale_channel_observation(self, channel_ratio: float) -> float:
+        reference = self._channel_ratio_reference()
+        scaled = np.log10(1.0 + max(channel_ratio, 0.0)) / np.log10(1.0 + reference)
+        return float(np.clip(scaled, 0.0, 2.0))
+
+    def _scale_deadline_observation(self, deadline_s: float) -> float:
+        deadline_reference_s = max(self.config.task_deadline_range_s[1], 5.0)
+        scaled = np.log1p(max(deadline_s, 0.0)) / np.log1p(deadline_reference_s)
+        return float(np.clip(scaled, 0.0, 2.0))
 
     def _update_channel_state(self) -> None:
         channel_gains = []
