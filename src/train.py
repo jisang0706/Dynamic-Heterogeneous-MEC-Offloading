@@ -33,6 +33,15 @@ class TrainingUpdateSummary:
     role_mu_var_per_dim: list[float] | None = None
     role_sigma_mean_per_dim: list[float] | None = None
     near_zero_sigma_fraction: float | None = None
+    policy_mean_env_mean_per_dim: list[float] | None = None
+    policy_mean_env_std_per_dim: list[float] | None = None
+    policy_std_env_mean_per_dim: list[float] | None = None
+    sampled_env_action_mean_per_dim: list[float] | None = None
+    sampled_env_action_std_per_dim: list[float] | None = None
+    sampled_env_action_near_zero_fraction: float | None = None
+    sampled_env_action_near_one_fraction: float | None = None
+    non_timeout_task_fraction: float | None = None
+    policy_log_std_mean_per_dim: list[float] | None = None
 
 
 @dataclass(slots=True)
@@ -359,6 +368,15 @@ class PPOTrainer:
             "role_mu_var_per_dim": summary.role_mu_var_per_dim,
             "role_sigma_mean_per_dim": summary.role_sigma_mean_per_dim,
             "near_zero_sigma_fraction": summary.near_zero_sigma_fraction,
+            "policy_mean_env_mean_per_dim": summary.policy_mean_env_mean_per_dim,
+            "policy_mean_env_std_per_dim": summary.policy_mean_env_std_per_dim,
+            "policy_std_env_mean_per_dim": summary.policy_std_env_mean_per_dim,
+            "sampled_env_action_mean_per_dim": summary.sampled_env_action_mean_per_dim,
+            "sampled_env_action_std_per_dim": summary.sampled_env_action_std_per_dim,
+            "sampled_env_action_near_zero_fraction": summary.sampled_env_action_near_zero_fraction,
+            "sampled_env_action_near_one_fraction": summary.sampled_env_action_near_one_fraction,
+            "non_timeout_task_fraction": summary.non_timeout_task_fraction,
+            "policy_log_std_mean_per_dim": summary.policy_log_std_mean_per_dim,
         }
         self.update_history.append(record)
         if self.update_log_path is not None:
@@ -445,6 +463,14 @@ class PPOTrainer:
             "near_zero_sigma_fraction": float(diagnostics["near_zero_sigma_fraction"].item()),
         }
 
+    def _policy_log_std_mean_per_dim(self) -> list[float]:
+        if self.actor.actor_type == "shared":
+            assert self.actor.shared_actor is not None
+            return self.actor.shared_actor.log_std.detach().cpu().tolist()
+        assert self.actor.actors is not None
+        stacked = self.torch.stack([module.log_std.detach() for module in self.actor.actors], dim=0)
+        return stacked.mean(dim=0).cpu().tolist()
+
     def collect_rollouts(
         self,
         num_episodes: int,
@@ -506,6 +532,7 @@ class PPOTrainer:
                         scaled_joint_reward=scaled_joint_reward,
                         value=value,
                         done=done,
+                        timeout_ratio=timeout_ratio,
                     )
                 )
                 observation = next_observation
@@ -642,6 +669,27 @@ class PPOTrainer:
                 critic_losses.append(float(critic_loss.item()))
                 entropies.append(float(entropy_bonus.item()))
 
+        with self.torch.no_grad():
+            full_actor_obs = batch["actor_obs"]
+            role_mu_full, _ = self._actor_role_posterior(full_actor_obs)
+            policy_role = role_mu_full if self.config.model.use_role else None
+            _, _, policy_mean_native, policy_std_native = self.actor.evaluate_actions(
+                full_actor_obs,
+                batch["action"],
+                policy_role,
+            )
+            policy_mean_env = self.actor.action_to_env(policy_mean_native)
+            sampled_env_action = self.actor.action_to_env(batch["action"])
+            reduction_dims = (0, 1)
+            policy_mean_env_mean_per_dim = policy_mean_env.mean(dim=reduction_dims).cpu().tolist()
+            policy_mean_env_std_per_dim = policy_mean_env.std(dim=reduction_dims, unbiased=False).cpu().tolist()
+            policy_std_env_mean_per_dim = self.actor.action_to_env(policy_std_native).mean(dim=reduction_dims).cpu().tolist()
+            sampled_env_action_mean_per_dim = sampled_env_action.mean(dim=reduction_dims).cpu().tolist()
+            sampled_env_action_std_per_dim = sampled_env_action.std(dim=reduction_dims, unbiased=False).cpu().tolist()
+            sampled_env_action_near_zero_fraction = float((sampled_env_action < 0.05).float().mean().item())
+            sampled_env_action_near_one_fraction = float((sampled_env_action > 0.95).float().mean().item())
+            non_timeout_task_fraction = float((1.0 - batch["timeout_ratio"]).mean().item())
+
         return TrainingUpdateSummary(
             steps=len(buffer),
             mean_joint_reward=buffer.mean_joint_reward(),
@@ -660,6 +708,15 @@ class PPOTrainer:
             near_zero_sigma_fraction=(
                 sum(near_zero_sigma_history) / len(near_zero_sigma_history) if near_zero_sigma_history else None
             ),
+            policy_mean_env_mean_per_dim=policy_mean_env_mean_per_dim,
+            policy_mean_env_std_per_dim=policy_mean_env_std_per_dim,
+            policy_std_env_mean_per_dim=policy_std_env_mean_per_dim,
+            sampled_env_action_mean_per_dim=sampled_env_action_mean_per_dim,
+            sampled_env_action_std_per_dim=sampled_env_action_std_per_dim,
+            sampled_env_action_near_zero_fraction=sampled_env_action_near_zero_fraction,
+            sampled_env_action_near_one_fraction=sampled_env_action_near_one_fraction,
+            non_timeout_task_fraction=non_timeout_task_fraction,
+            policy_log_std_mean_per_dim=self._policy_log_std_mean_per_dim(),
         )
 
     def run_smoke_rollout(self) -> SmokeRunSummary:
