@@ -430,11 +430,12 @@ class PPOTrainer:
                     )
                     value = float(self._critic_values(core_obs, server_info, positions).item())
 
-                next_observation, reward, done, _ = self.env.step(env_action.cpu().numpy())
+                next_observation, reward, done, info = self.env.step(env_action.cpu().numpy())
                 joint_reward = float(reward.sum())
                 scaled_joint_reward = joint_reward
                 if self.reward_scaler is not None:
                     scaled_joint_reward = self.reward_scaler.scale(joint_reward)
+                timeout_ratio = float(info.get("timeout_ratio", 1.0))
                 episode_joint_reward += joint_reward
                 episode_length += 1
                 buffer.add(
