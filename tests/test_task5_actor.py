@@ -29,6 +29,7 @@ class Task5ActorTests(unittest.TestCase):
             hidden_dim=128,
             use_role=True,
             initial_action_std_env=0.25,
+            initial_offloading_mean_env=0.65,
             initial_power_mean_env=0.8,
         )
         obs = torch.zeros(2, 16)
@@ -36,9 +37,11 @@ class Task5ActorTests(unittest.TestCase):
 
         mean, std = actor(obs, role_mu)
 
+        self.assertAlmostEqual(float(mean[:, 0].mean().item() / 10.0), 0.65, places=2)
+        self.assertAlmostEqual(float(mean[:, 1].mean().item() / 10.0), 0.65, places=2)
+        self.assertAlmostEqual(float(mean[:, 2].mean().item() / 10.0), 0.65, places=2)
         self.assertAlmostEqual(float(mean[:, -1].mean().item() / 10.0), 0.8, places=2)
         self.assertAlmostEqual(float(std[:, -1].mean().item() / 10.0), 0.25, places=3)
-        self.assertAlmostEqual(float(mean[:, 0].mean().item() / 10.0), 0.5, places=2)
 
     def test_actor_sampling_matches_environment_interface(self) -> None:
         torch.manual_seed(7)
