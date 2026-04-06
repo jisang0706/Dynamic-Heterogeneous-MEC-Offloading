@@ -173,6 +173,8 @@ class IPPOTrainer:
             action_dim=config.model.action_dim,
             hidden_dim=config.model.actor_hidden_dim,
             use_role=False,
+            initial_action_std_env=config.model.initial_action_std_env,
+            initial_power_mean_env=config.model.initial_power_mean_env,
         ).to(self.device)
         critic_hidden_dim = max(config.model.critic_hidden_dim, 200)
         self.critics = nn.ModuleList(
