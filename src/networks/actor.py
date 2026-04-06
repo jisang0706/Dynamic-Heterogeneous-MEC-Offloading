@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch
 from torch import nn
 from torch.distributions import Normal
@@ -15,18 +17,33 @@ class RoleConditionedActor(nn.Module):
         action_dim: int = 4,
         hidden_dim: int = 128,
         use_role: bool = True,
+        initial_action_std_env: float = 0.25,
+        initial_power_mean_env: float = 0.8,
     ) -> None:
         super().__init__()
         self.use_role = use_role
         self.action_dim = action_dim
         self.role_dim = role_dim
+        if initial_action_std_env <= 0.0:
+            raise ValueError("initial_action_std_env must be positive.")
+        if not 0.0 < initial_power_mean_env < 1.0:
+            raise ValueError("initial_power_mean_env must be strictly between 0 and 1.")
         tanh_gain = nn.init.calculate_gain("tanh")
         input_dim = obs_dim + role_dim if use_role else obs_dim
         self.fc1 = orthogonal_init(nn.Linear(input_dim, hidden_dim), gain=tanh_gain)
         self.fc2 = orthogonal_init(nn.Linear(hidden_dim, hidden_dim), gain=tanh_gain)
         self.fc3 = orthogonal_init(nn.Linear(hidden_dim, action_dim), gain=0.01)
         self.tanh = nn.Tanh()
-        self.log_std = nn.Parameter(torch.zeros(action_dim))
+        native_std = max(initial_action_std_env * 10.0, 1e-4)
+        self.log_std = nn.Parameter(torch.full((action_dim,), math.log(native_std), dtype=torch.float32))
+        with torch.no_grad():
+            self.fc3.bias.zero_()
+            self.fc3.bias[-1] = self._env_mean_to_native_bias(initial_power_mean_env)
+
+    @staticmethod
+    def _env_mean_to_native_bias(env_mean: float) -> float:
+        centered = max(min(env_mean * 2.0 - 1.0, 0.999), -0.999)
+        return math.atanh(centered)
 
     def _prepare_inputs(self, obs: torch.Tensor, role_mu: torch.Tensor | None) -> torch.Tensor:
         if obs.dim() == 1:
@@ -87,6 +104,8 @@ class MultiAgentRoleConditionedActor(nn.Module):
         action_dim: int = 4,
         hidden_dim: int = 128,
         use_role: bool = True,
+        initial_action_std_env: float = 0.25,
+        initial_power_mean_env: float = 0.8,
     ) -> None:
         super().__init__()
         if actor_type not in {"shared", "individual"}:
@@ -105,6 +124,8 @@ class MultiAgentRoleConditionedActor(nn.Module):
                 action_dim=action_dim,
                 hidden_dim=hidden_dim,
                 use_role=use_role,
+                initial_action_std_env=initial_action_std_env,
+                initial_power_mean_env=initial_power_mean_env,
             )
             self.actors = None
         else:
@@ -117,6 +138,8 @@ class MultiAgentRoleConditionedActor(nn.Module):
                         action_dim=action_dim,
                         hidden_dim=hidden_dim,
                         use_role=use_role,
+                        initial_action_std_env=initial_action_std_env,
+                        initial_power_mean_env=initial_power_mean_env,
                     )
                     for _ in range(num_agents)
                 ]

@@ -147,6 +147,8 @@ class ModelConfig:
     role_hidden_dim: int = 12
     trajectory_hidden_dim: int = 64
     action_dim: int = 4
+    initial_action_std_env: float = 0.25
+    initial_power_mean_env: float = 0.8
 
 
 @dataclass(slots=True)
@@ -215,6 +217,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--actor-type", choices=("shared", "individual"), default="shared")
     parser.add_argument("--role-dim", type=int, default=3)
     parser.add_argument("--actor-hidden-dim", type=int, default=128)
+    parser.add_argument("--initial-action-std-env", type=float, default=0.25)
+    parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
 
     parser.add_argument("--learning-rate", type=float, default=4e-4)
     parser.add_argument("--run-mode", choices=("smoke", "train"), default="smoke")
@@ -262,6 +266,8 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         actor_type=args.actor_type,
         role_dim=args.role_dim,
         actor_hidden_dim=args.actor_hidden_dim,
+        initial_action_std_env=args.initial_action_std_env,
+        initial_power_mean_env=args.initial_power_mean_env,
     )
     training = TrainingConfig(
         run_mode=args.run_mode,

@@ -174,6 +174,8 @@ class PPOTrainer:
             action_dim=config.model.action_dim,
             hidden_dim=config.model.actor_hidden_dim,
             use_role=config.model.use_role,
+            initial_action_std_env=config.model.initial_action_std_env,
+            initial_power_mean_env=config.model.initial_power_mean_env,
         ).to(self.device)
         self.critic = build_critic(config, self.components).to(self.device)
         self.role_diversity_loss = self.components["role_diversity_loss"]
