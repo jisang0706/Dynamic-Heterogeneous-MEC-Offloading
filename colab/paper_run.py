@@ -68,6 +68,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=800)
     parser.add_argument("--ppo-epochs", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=4e-4)
+    parser.add_argument("--ppo-clip", type=float, default=0.1)
+    parser.add_argument("--entropy-coeff", type=float, default=0.01)
+    parser.add_argument("--gradient-clip", type=float, default=2.0)
+    parser.add_argument("--l-i-coeff", type=float, default=1e-4)
+    parser.add_argument("--lambda-var", type=float, default=1e-5)
+    parser.add_argument("--sigma-floor", type=float, default=0.05)
+    parser.add_argument("--initial-action-std-env", type=float, default=0.25)
+    parser.add_argument("--initial-offloading-mean-env", type=float, default=0.65)
+    parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
+    parser.add_argument("--use-obs-scaling", choices=("true", "false"), default="true")
+    parser.add_argument("--use-reward-scaling", choices=("true", "false"), default="true")
     parser.add_argument("--save-every-episodes", type=int, default=100)
     parser.add_argument("--skip-visualize", action="store_true")
     parser.add_argument("--force-train", action="store_true")
@@ -230,6 +241,28 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
         str(args.ppo_epochs),
         "--learning-rate",
         str(args.learning_rate),
+        "--ppo-clip",
+        str(args.ppo_clip),
+        "--entropy-coeff",
+        str(args.entropy_coeff),
+        "--gradient-clip",
+        str(args.gradient_clip),
+        "--l-i-coeff",
+        str(args.l_i_coeff),
+        "--lambda-var",
+        str(args.lambda_var),
+        "--sigma-floor",
+        str(args.sigma_floor),
+        "--initial-action-std-env",
+        str(args.initial_action_std_env),
+        "--initial-offloading-mean-env",
+        str(args.initial_offloading_mean_env),
+        "--initial-power-mean-env",
+        str(args.initial_power_mean_env),
+        "--use-obs-scaling",
+        args.use_obs_scaling,
+        "--use-reward-scaling",
+        args.use_reward_scaling,
         "--save-every-episodes",
         str(args.save_every_episodes),
     ]
