@@ -214,3 +214,5 @@ logs/
 models/
 results/
 docs/Implementation_Plan_TASK9_14.md
+/li_code
+/reference_pgcn_mappo

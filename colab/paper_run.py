@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -28,6 +29,12 @@ DEFAULT_STAGE_EVAL_EPISODES = {
     "smoke": 20,
     "core": 50,
     "scale": 50,
+}
+
+DEFAULT_CHECKPOINT_MILESTONES = {
+    "smoke": (100,),
+    "core": (100, 200, 400, 800, 1600, 3200),
+    "scale": (100, 200, 400, 800, 1600, 3200),
 }
 
 DEFAULT_SEED_POOL = (42, 43, 44, 45, 46)
@@ -67,19 +74,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--update-every-episodes", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=800)
     parser.add_argument("--ppo-epochs", type=int, default=4)
-    parser.add_argument("--learning-rate", type=float, default=4e-4)
-    parser.add_argument("--ppo-clip", type=float, default=0.1)
-    parser.add_argument("--entropy-coeff", type=float, default=0.01)
-    parser.add_argument("--gradient-clip", type=float, default=2.0)
+    parser.add_argument("--learning-rate", type=float, default=2e-4)
+    parser.add_argument("--ppo-clip", type=float, default=0.05)
+    parser.add_argument("--entropy-coeff", type=float, default=1e-3)
+    parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument("--l-i-coeff", type=float, default=1e-4)
     parser.add_argument("--lambda-var", type=float, default=1e-5)
     parser.add_argument("--sigma-floor", type=float, default=0.05)
-    parser.add_argument("--initial-action-std-env", type=float, default=0.25)
-    parser.add_argument("--initial-offloading-mean-env", type=float, default=0.65)
+    parser.add_argument("--initial-action-std-env", type=float, default=0.10)
+    parser.add_argument("--initial-offloading-mean-env", type=float, default=0.75)
     parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
-    parser.add_argument("--use-obs-scaling", choices=("true", "false"), default="true")
+    parser.add_argument("--use-obs-scaling", choices=("true", "false"), default="false")
     parser.add_argument("--use-reward-scaling", choices=("true", "false"), default="true")
     parser.add_argument("--save-every-episodes", type=int, default=100)
+    parser.add_argument("--checkpoint-selection-mode", choices=("final_only", "milestone_best"), default="milestone_best")
+    parser.add_argument("--checkpoint-milestones", nargs="*", type=int, default=None)
     parser.add_argument("--skip-visualize", action="store_true")
     parser.add_argument("--force-train", action="store_true")
     parser.add_argument("--force-evaluate", action="store_true")
@@ -127,10 +136,10 @@ def _checkpoint_prefix(runner_kind: str) -> str:
     return "ippo_checkpoint" if runner_kind == "ippo" else "checkpoint"
 
 
-def discover_best_checkpoint(output_root: Path, runner_kind: str) -> CheckpointInfo | None:
+def discover_checkpoint_candidates(output_root: Path, runner_kind: str) -> list[CheckpointInfo]:
     models_dir = output_root / "models"
     if not models_dir.exists():
-        return None
+        return []
 
     prefix = _checkpoint_prefix(runner_kind)
     candidate_paths: list[Path] = []
@@ -138,20 +147,35 @@ def discover_best_checkpoint(output_root: Path, runner_kind: str) -> CheckpointI
         path = models_dir / f"{prefix}_{suffix}.pt"
         if path.exists():
             candidate_paths.append(path)
+    candidate_paths.extend(sorted(models_dir.glob(f"{prefix}_ep*_u*.pt")))
     if not candidate_paths:
-        candidate_paths.extend(sorted(models_dir.glob(f"{prefix}_ep*_u*.pt")))
-    if not candidate_paths:
+        return []
+
+    seen_paths: set[Path] = set()
+    candidates: list[CheckpointInfo] = []
+    for checkpoint_path in candidate_paths:
+        if checkpoint_path in seen_paths:
+            continue
+        seen_paths.add(checkpoint_path)
+        checkpoint = _torch_load_checkpoint(checkpoint_path)
+        candidates.append(
+            CheckpointInfo(
+                path=checkpoint_path,
+                episodes_completed=int(checkpoint.get("episodes_completed", 0)),
+                update_index=int(checkpoint.get("update_index", 0)),
+                selection_rule=_checkpoint_selection_rule(checkpoint_path),
+            )
+        )
+    return candidates
+
+
+def discover_best_checkpoint(output_root: Path, runner_kind: str) -> CheckpointInfo | None:
+    candidates = discover_checkpoint_candidates(output_root, runner_kind)
+    if not candidates:
         return None
 
     best: CheckpointInfo | None = None
-    for checkpoint_path in candidate_paths:
-        checkpoint = _torch_load_checkpoint(checkpoint_path)
-        info = CheckpointInfo(
-            path=checkpoint_path,
-            episodes_completed=int(checkpoint.get("episodes_completed", 0)),
-            update_index=int(checkpoint.get("update_index", 0)),
-            selection_rule=_checkpoint_selection_rule(checkpoint_path),
-        )
+    for info in candidates:
         if best is None:
             best = info
             continue
@@ -166,9 +190,125 @@ def expected_final_checkpoint(output_root: Path, runner_kind: str) -> Path:
     return output_root / "models" / f"{_checkpoint_prefix(runner_kind)}_final.pt"
 
 
+def expected_selected_summary(output_root: Path) -> tuple[Path, Path]:
+    results_dir = output_root / "results"
+    return (
+        results_dir / "evaluation_selected_summary.json",
+        results_dir / "evaluation_selected_trace.jsonl",
+    )
+
+
 def default_seeds(stage_spec: ProtocolStageSpec) -> list[int]:
     seed_count = stage_spec.recommended_seed_count[0]
     return list(DEFAULT_SEED_POOL[:seed_count])
+
+
+def resolve_checkpoint_targets(spec: RunSpec, args: argparse.Namespace) -> list[int]:
+    configured = args.checkpoint_milestones
+    if configured:
+        milestones = [int(item) for item in configured]
+    else:
+        milestones = list(DEFAULT_CHECKPOINT_MILESTONES.get(spec.stage_id, ()))
+    filtered = [episode for episode in milestones if 0 < episode < spec.train_episodes]
+    filtered.append(spec.train_episodes)
+    return sorted(set(filtered))
+
+
+def select_checkpoint_candidates(candidates: list[CheckpointInfo], target_episodes: list[int]) -> list[CheckpointInfo]:
+    if not candidates:
+        return []
+
+    best_by_episode: dict[int, CheckpointInfo] = {}
+    for info in candidates:
+        current = best_by_episode.get(info.episodes_completed)
+        if current is None:
+            best_by_episode[info.episodes_completed] = info
+            continue
+        current_key = (current.update_index, _checkpoint_priority(current.path))
+        info_key = (info.update_index, _checkpoint_priority(info.path))
+        if info_key > current_key:
+            best_by_episode[info.episodes_completed] = info
+
+    available_episodes = sorted(best_by_episode.keys())
+    selected: list[CheckpointInfo] = []
+    seen_paths: set[Path] = set()
+    for target in target_episodes:
+        eligible = [episode for episode in available_episodes if episode <= target]
+        chosen_episode = eligible[-1] if eligible else available_episodes[0]
+        chosen = best_by_episode[chosen_episode]
+        if chosen.path in seen_paths:
+            continue
+        selected.append(chosen)
+        seen_paths.add(chosen.path)
+    return selected
+
+
+def _summary_sort_key(summary: dict[str, Any]) -> tuple[float, float, float]:
+    metrics = summary["metrics"]
+    return (
+        float(metrics["mean_timeout_ratio"]),
+        -float(metrics["mean_episode_joint_reward"]),
+        float(metrics["mean_task_processing_cost"]),
+    )
+
+
+def _candidate_trace_label(checkpoint: CheckpointInfo) -> str:
+    return checkpoint.path.stem
+
+
+def _candidate_summary_path(results_dir: Path, checkpoint: CheckpointInfo) -> Path:
+    return results_dir / f"evaluation_{_candidate_trace_label(checkpoint)}_summary.json"
+
+
+def _candidate_trace_path(results_dir: Path, checkpoint: CheckpointInfo) -> Path:
+    return results_dir / f"evaluation_{_candidate_trace_label(checkpoint)}_trace.jsonl"
+
+
+def _write_selected_outputs(
+    output_root: Path,
+    summary_path: Path,
+    trace_path: Path,
+    checkpoint: CheckpointInfo,
+    target_episodes: list[int],
+) -> tuple[Path, Path]:
+    selected_summary_path, selected_trace_path = expected_selected_summary(output_root)
+    selected_summary = _load_summary(summary_path)
+    selected_summary["trace_path"] = str(selected_trace_path)
+    selected_summary["results_dir"] = str(output_root / "results")
+    selected_summary["runner_selection"] = {
+        "mode": "milestone_best",
+        "target_episodes": target_episodes,
+        "selected_checkpoint_path": str(checkpoint.path),
+        "selected_checkpoint_selection_rule": checkpoint.selection_rule,
+        "selected_checkpoint_episodes_completed": checkpoint.episodes_completed,
+        "selected_checkpoint_update_index": checkpoint.update_index,
+        "source_summary_path": str(summary_path),
+        "source_trace_path": str(trace_path),
+    }
+    selected_summary_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(selected_summary_path, selected_summary)
+    shutil.copy2(trace_path, selected_trace_path)
+    return selected_summary_path, selected_trace_path
+
+
+def _selected_summary_is_fresh(
+    summary_path: Path,
+    checkpoints: list[CheckpointInfo],
+    target_episodes: list[int],
+) -> bool:
+    if not summary_path.exists() or not checkpoints:
+        return False
+    try:
+        summary = _load_summary(summary_path)
+    except json.JSONDecodeError:
+        return False
+    selection = summary.get("runner_selection", {})
+    if selection.get("mode") != "milestone_best":
+        return False
+    if list(selection.get("target_episodes", [])) != target_episodes:
+        return False
+    latest_checkpoint_mtime = max(checkpoint.path.stat().st_mtime for checkpoint in checkpoints)
+    return summary_path.stat().st_mtime >= latest_checkpoint_mtime
 
 
 def stage_run_specs(stage_id: str, args: argparse.Namespace) -> tuple[ProtocolStageSpec, list[RunSpec]]:
@@ -275,6 +415,8 @@ def _evaluate_command(
     spec: RunSpec,
     checkpoint_path: Path | None,
     checkpoint_selection_rule: str,
+    results_dir: Path | None = None,
+    trace_label: str | None = None,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -304,6 +446,10 @@ def _evaluate_command(
                 str(spec.episode_length),
             ]
         )
+    if results_dir is not None:
+        command.extend(["--results-dir", str(results_dir)])
+    if trace_label is not None:
+        command.extend(["--trace-label", trace_label])
     return command
 
 
@@ -311,6 +457,9 @@ def discover_summary_file(spec: RunSpec) -> Path | None:
     results_dir = spec.output_root / "results"
     if not results_dir.exists():
         return None
+    expected_selected = results_dir / "evaluation_selected_summary.json"
+    if expected_selected.exists():
+        return expected_selected
     if spec.runner_kind == "fixed":
         expected = results_dir / f"evaluation_{spec.variant_id.lower()}_summary.json"
         if expected.exists():
@@ -357,7 +506,62 @@ def ensure_evaluation(
     repo_root: Path,
     checkpoint_path: Path | None,
     checkpoint_selection_rule: str,
-) -> Path:
+) -> tuple[Path, Path | None, str]:
+    if spec.runner_kind != "fixed" and args.checkpoint_selection_mode == "milestone_best":
+        all_candidates = discover_checkpoint_candidates(spec.output_root, spec.runner_kind)
+        target_episodes = resolve_checkpoint_targets(spec, args)
+        selected_candidates = select_checkpoint_candidates(all_candidates, target_episodes)
+        if not selected_candidates:
+            raise SystemExit(f"No candidate checkpoints available for milestone selection in {spec.output_root}")
+
+        selected_summary_path, _ = expected_selected_summary(spec.output_root)
+        if _selected_summary_is_fresh(selected_summary_path, selected_candidates, target_episodes) and not args.force_evaluate:
+            print(f"[skip-eval] {spec.stage_id} {spec.variant_id} m={spec.num_agents} seed={spec.seed}")
+            selected_summary = _load_summary(selected_summary_path)
+            selection = selected_summary["runner_selection"]
+            return (
+                selected_summary_path,
+                Path(selection["selected_checkpoint_path"]),
+                str(selection["selected_checkpoint_selection_rule"]),
+            )
+
+        sweep_dir = spec.output_root / "results" / "checkpoint_sweep"
+        sweep_dir.mkdir(parents=True, exist_ok=True)
+        evaluated: list[tuple[CheckpointInfo, Path, Path, dict[str, Any]]] = []
+        for candidate in selected_candidates:
+            label = _candidate_trace_label(candidate)
+            candidate_summary_path = _candidate_summary_path(sweep_dir, candidate)
+            summary_is_fresh = (
+                candidate_summary_path.exists()
+                and candidate_summary_path.stat().st_mtime >= candidate.path.stat().st_mtime
+            )
+            if not summary_is_fresh or args.force_evaluate:
+                _run_command(
+                    _evaluate_command(
+                        spec,
+                        checkpoint_path=candidate.path,
+                        checkpoint_selection_rule=candidate.selection_rule,
+                        results_dir=sweep_dir,
+                        trace_label=label,
+                    ),
+                    cwd=repo_root,
+                )
+            summary = _load_summary(candidate_summary_path)
+            evaluated.append((candidate, candidate_summary_path, _candidate_trace_path(sweep_dir, candidate), summary))
+
+        best_candidate, best_summary_path, best_trace_path, _ = min(
+            evaluated,
+            key=lambda item: _summary_sort_key(item[3]),
+        )
+        canonical_summary_path, _ = _write_selected_outputs(
+            spec.output_root,
+            best_summary_path,
+            best_trace_path,
+            best_candidate,
+            target_episodes,
+        )
+        return canonical_summary_path, best_candidate.path, best_candidate.selection_rule
+
     summary_path = discover_summary_file(spec)
     if spec.runner_kind == "fixed":
         summary_is_fresh = summary_path is not None and summary_path.exists()
@@ -369,7 +573,7 @@ def ensure_evaluation(
         )
     if summary_is_fresh and not args.force_evaluate:
         print(f"[skip-eval] {spec.stage_id} {spec.variant_id} m={spec.num_agents} seed={spec.seed}")
-        return summary_path
+        return summary_path, checkpoint_path, checkpoint_selection_rule
 
     _run_command(
         _evaluate_command(spec, checkpoint_path=checkpoint_path, checkpoint_selection_rule=checkpoint_selection_rule),
@@ -378,15 +582,15 @@ def ensure_evaluation(
     refreshed_summary = discover_summary_file(spec)
     if refreshed_summary is None:
         raise SystemExit(f"Evaluation completed but no summary file was found for {spec.output_root}")
-    return refreshed_summary
+    return refreshed_summary, checkpoint_path, checkpoint_selection_rule
 
 
 def _load_summary(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def generate_stage_visualizations(stage_root: Path, stage_id: str, repo_root: Path) -> list[str]:
-    summary_files = sorted(stage_root.rglob("evaluation_*_summary.json"))
+def generate_stage_visualizations(stage_root: Path, stage_id: str, repo_root: Path, summary_files: list[Path]) -> list[str]:
+    summary_files = sorted(path for path in summary_files if path.exists())
     if not summary_files:
         return []
 
@@ -466,7 +670,22 @@ def run_stage(stage_id: str, args: argparse.Namespace, repo_root: Path) -> None:
             f"m={spec.num_agents} seed={spec.seed} root={spec.output_root}"
         )
         checkpoint_path, checkpoint_rule, checkpoint_info = ensure_training(spec, args, repo_root)
-        summary_path = ensure_evaluation(spec, args, repo_root, checkpoint_path, checkpoint_rule)
+        summary_path, selected_checkpoint_path, selected_checkpoint_rule = ensure_evaluation(
+            spec,
+            args,
+            repo_root,
+            checkpoint_path,
+            checkpoint_rule,
+        )
+        selected_checkpoint_info = None
+        if selected_checkpoint_path is not None:
+            selected_checkpoint_payload = _torch_load_checkpoint(Path(selected_checkpoint_path))
+            selected_checkpoint_info = CheckpointInfo(
+                path=Path(selected_checkpoint_path),
+                episodes_completed=int(selected_checkpoint_payload.get("episodes_completed", 0)),
+                update_index=int(selected_checkpoint_payload.get("update_index", 0)),
+                selection_rule=selected_checkpoint_rule,
+            )
         manifest["runs"].append(
             {
                 "stage": spec.stage_id,
@@ -477,17 +696,27 @@ def run_stage(stage_id: str, args: argparse.Namespace, repo_root: Path) -> None:
                 "train_episodes": spec.train_episodes,
                 "eval_episodes": spec.eval_episodes,
                 "output_root": spec.output_root,
-                "checkpoint_path": checkpoint_path,
-                "checkpoint_selection_rule": checkpoint_rule,
-                "checkpoint_episodes_completed": None if checkpoint_info is None else checkpoint_info.episodes_completed,
-                "checkpoint_update_index": None if checkpoint_info is None else checkpoint_info.update_index,
+                "checkpoint_selection_mode": args.checkpoint_selection_mode,
+                "checkpoint_path": selected_checkpoint_path,
+                "checkpoint_selection_rule": selected_checkpoint_rule,
+                "checkpoint_episodes_completed": None
+                if selected_checkpoint_info is None
+                else selected_checkpoint_info.episodes_completed,
+                "checkpoint_update_index": None
+                if selected_checkpoint_info is None
+                else selected_checkpoint_info.update_index,
                 "summary_path": summary_path,
             }
         )
         _write_json(manifest_path, manifest)
 
     if not args.skip_visualize:
-        manifest["generated_plot_roots"] = generate_stage_visualizations(stage_root, stage_id, repo_root)
+        manifest["generated_plot_roots"] = generate_stage_visualizations(
+            stage_root,
+            stage_id,
+            repo_root,
+            [Path(run["summary_path"]) for run in manifest["runs"]],
+        )
         _write_json(manifest_path, manifest)
 
 

@@ -147,8 +147,8 @@ class ModelConfig:
     role_hidden_dim: int = 12
     trajectory_hidden_dim: int = 64
     action_dim: int = 4
-    initial_action_std_env: float = 0.25
-    initial_offloading_mean_env: float = 0.65
+    initial_action_std_env: float = 0.10
+    initial_offloading_mean_env: float = 0.75
     initial_power_mean_env: float = 0.8
 
 
@@ -157,16 +157,16 @@ class TrainingConfig:
     run_mode: str = "smoke"
     variant_id: str | None = None
     resume_from: str | None = None
-    learning_rate: float = 4e-4
+    learning_rate: float = 2e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
-    ppo_clip: float = 0.1
-    entropy_coeff: float = 0.01
+    ppo_clip: float = 0.05
+    entropy_coeff: float = 0.001
     l_i_coeff: float = 1e-4
     l_d_coeff: float = 1e-3
     lambda_var: float = 1e-5
     sigma_floor: float = 0.05
-    gradient_clip: float = 2.0
+    gradient_clip: float = 1.0
     update_every_episodes: int = 4
     ppo_epochs: int = 4
     batch_size: int = 800
@@ -174,7 +174,7 @@ class TrainingConfig:
     smoke_steps: int = 8
     trajectory_window: int = 20
     trajectory_action_scale: float = 10.0
-    use_obs_scaling: bool = True
+    use_obs_scaling: bool = False
     use_reward_scaling: bool = True
     save_every_episodes: int = 100
 
@@ -219,23 +219,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--actor-type", choices=("shared", "individual"), default="shared")
     parser.add_argument("--role-dim", type=int, default=3)
     parser.add_argument("--actor-hidden-dim", type=int, default=128)
-    parser.add_argument("--initial-action-std-env", type=float, default=0.25)
-    parser.add_argument("--initial-offloading-mean-env", type=float, default=0.65)
+    parser.add_argument("--initial-action-std-env", type=float, default=0.10)
+    parser.add_argument("--initial-offloading-mean-env", type=float, default=0.75)
     parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
 
-    parser.add_argument("--learning-rate", type=float, default=4e-4)
+    parser.add_argument("--learning-rate", type=float, default=2e-4)
     parser.add_argument("--run-mode", choices=("smoke", "train"), default="smoke")
     parser.add_argument("--variant-id", type=str, default=None)
     parser.add_argument("--resume-from", type=Path, default=None)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
-    parser.add_argument("--ppo-clip", type=float, default=0.1)
-    parser.add_argument("--entropy-coeff", type=float, default=0.01)
+    parser.add_argument("--ppo-clip", type=float, default=0.05)
+    parser.add_argument("--entropy-coeff", type=float, default=0.001)
     parser.add_argument("--l-i-coeff", type=float, default=1e-4)
     parser.add_argument("--l-d-coeff", type=float, default=1e-3)
     parser.add_argument("--lambda-var", type=float, default=1e-5)
     parser.add_argument("--sigma-floor", type=float, default=0.05)
-    parser.add_argument("--gradient-clip", type=float, default=2.0)
+    parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument("--update-every-episodes", type=int, default=4)
     parser.add_argument("--ppo-epochs", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=800)
@@ -243,7 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--smoke-steps", type=int, default=8)
     parser.add_argument("--trajectory-window", type=int, default=20)
     parser.add_argument("--trajectory-action-scale", type=float, default=10.0)
-    parser.add_argument("--use-obs-scaling", type=_str_to_bool, default=True)
+    parser.add_argument("--use-obs-scaling", type=_str_to_bool, default=False)
     parser.add_argument("--use-reward-scaling", type=_str_to_bool, default=True)
     parser.add_argument("--save-every-episodes", type=int, default=100)
     parser.add_argument("--run-feasibility-audit", type=_str_to_bool, default=False)
