@@ -98,7 +98,9 @@ def _annotate_bars(
     if not finite_values:
         return
     value_span = max(finite_values) - min(finite_values)
-    offset = max(value_span * 0.02, max(abs(value) for value in finite_values) * 0.015, 0.01)
+    max_magnitude = max(abs(value) for value in finite_values)
+    offset = max(value_span * 0.02, max_magnitude * 0.015, 0.01)
+    lower_bound, upper_bound = axis.get_ylim()
 
     for index, (bar, value) in enumerate(zip(bars, values)):
         if value is None or not np.isfinite(value):
@@ -107,13 +109,33 @@ def _annotate_bars(
         label = _format_numeric_with_std(value, std_value)
         x = bar.get_x() + bar.get_width() / 2.0
         height = float(bar.get_height())
-        if height >= 0.0:
+        inside_margin = max(abs(height) * 0.08, offset * 1.25)
+        can_place_inside = abs(height) >= max(max_magnitude * 0.08, 0.05)
+        if can_place_inside and height >= 0.0:
+            y = height - inside_margin
+            va = "top"
+            color = "white"
+        elif can_place_inside and height < 0.0:
+            y = height + inside_margin
+            va = "bottom"
+            color = "white"
+        elif height >= 0.0:
             y = height + offset
             va = "bottom"
+            color = "black"
+            upper_bound = max(upper_bound, y + offset)
         else:
             y = height - offset
             va = "top"
-        axis.text(x, y, label, ha="center", va=va, fontsize=fontsize)
+            color = "black"
+            lower_bound = min(lower_bound, y - offset)
+        axis.text(x, y, label, ha="center", va=va, fontsize=fontsize, color=color)
+
+    current_low, current_high = axis.get_ylim()
+    if lower_bound < current_low or upper_bound > current_high:
+        span = max(current_high - current_low, offset * 4.0)
+        pad = max(span * 0.04, offset)
+        axis.set_ylim(min(lower_bound - pad, current_low), max(upper_bound + pad, current_high))
 
 
 def _annotate_heatmap(axis: Any, heatmap: np.ndarray, image: Any, fontsize: int = 8) -> None:
@@ -145,9 +167,19 @@ def _display_label(raw_label: str | None) -> str:
     return DISPLAY_NAME_MAP.get(raw_label, raw_label)
 
 
+def _plot_label(raw_label: str | None, *, num_agents: int | None = None) -> str:
+    label = _display_label(raw_label)
+    label = label.replace("-MAPPO", "\nMAPPO")
+    label = label.replace(" MAPPO", "\nMAPPO")
+    label = label.replace(" (", "\n(")
+    if num_agents is not None:
+        label = f"{label}\n(M={num_agents})"
+    return label
+
+
 def _summary_display_label(summary: dict[str, Any], fallback_index: int) -> str:
     raw_label = summary.get("variant_id") or summary.get("label", f"run_{fallback_index}")
-    return _display_label(raw_label)
+    return _plot_label(raw_label)
 
 
 def discover_summary_files(results_dir: Path) -> list[Path]:
@@ -305,23 +337,23 @@ def plot_summary_comparison(summaries: list[dict[str, Any]], plots_dir: Path) ->
     timeout = [summary["metrics"]["mean_timeout_ratio"] for summary in summaries]
     cost = [summary["metrics"]["mean_task_processing_cost"] for summary in summaries]
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     reward_bars = axes[0].bar(labels, reward, color="#c44e52")
     axes[0].set_title("Mean Episode Joint Reward")
     axes[0].set_ylabel("Reward [a.u.]")
-    axes[0].tick_params(axis="x", rotation=45)
+    axes[0].tick_params(axis="x", labelsize=8)
     _annotate_bars(axes[0], reward_bars, reward)
 
     timeout_bars = axes[1].bar(labels, timeout, color="#4c72b0")
     axes[1].set_title("Mean Timeout Ratio")
     axes[1].set_ylabel("Ratio [-]")
-    axes[1].tick_params(axis="x", rotation=45)
+    axes[1].tick_params(axis="x", labelsize=8)
     _annotate_bars(axes[1], timeout_bars, timeout)
 
     cost_bars = axes[2].bar(labels, cost, color="#55a868")
     axes[2].set_title("Mean Task Cost")
     axes[2].set_ylabel("Normalized Cost [-]")
-    axes[2].tick_params(axis="x", rotation=45)
+    axes[2].tick_params(axis="x", labelsize=8)
     _annotate_bars(axes[2], cost_bars, cost)
 
     fig.tight_layout()
@@ -336,7 +368,7 @@ def plot_seed_aggregation_comparison(summaries: list[dict[str, Any]], plots_dir:
     if not aggregated:
         return None
 
-    labels = [f"{item['display_label']}@M{item['num_agents']}" for item in aggregated]
+    labels = [_plot_label(item["label"], num_agents=item["num_agents"]) for item in aggregated]
     reward_mean = [item["metrics"]["mean_episode_joint_reward"]["mean"] or 0.0 for item in aggregated]
     reward_std = [item["metrics"]["mean_episode_joint_reward"]["std"] or 0.0 for item in aggregated]
     timeout_mean = [item["metrics"]["mean_timeout_ratio"]["mean"] or 0.0 for item in aggregated]
@@ -345,23 +377,26 @@ def plot_seed_aggregation_comparison(summaries: list[dict[str, Any]], plots_dir:
     queue_std = [item["metrics"]["mean_edge_queue"]["std"] or 0.0 for item in aggregated]
 
     x = np.arange(len(aggregated))
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
     reward_bars = axes[0].bar(x, reward_mean, yerr=reward_std, color="#c44e52", capsize=4)
     axes[0].set_title("Reward Mean ± Std")
     axes[0].set_ylabel("Reward [a.u.]")
-    axes[0].set_xticks(x, labels, rotation=45)
+    axes[0].set_xticks(x, labels)
+    axes[0].tick_params(axis="x", labelsize=8)
     _annotate_bars(axes[0], reward_bars, reward_mean, stds=reward_std)
 
     timeout_bars = axes[1].bar(x, timeout_mean, yerr=timeout_std, color="#4c72b0", capsize=4)
     axes[1].set_title("Timeout Mean ± Std")
     axes[1].set_ylabel("Ratio [-]")
-    axes[1].set_xticks(x, labels, rotation=45)
+    axes[1].set_xticks(x, labels)
+    axes[1].tick_params(axis="x", labelsize=8)
     _annotate_bars(axes[1], timeout_bars, timeout_mean, stds=timeout_std)
 
     queue_bars = axes[2].bar(x, queue_mean, yerr=queue_std, color="#55a868", capsize=4)
     axes[2].set_title("Edge Queue Mean ± Std")
     axes[2].set_ylabel("Queue [Gcycles]")
-    axes[2].set_xticks(x, labels, rotation=45)
+    axes[2].set_xticks(x, labels)
+    axes[2].tick_params(axis="x", labelsize=8)
     _annotate_bars(axes[2], queue_bars, queue_mean, stds=queue_std)
 
     fig.tight_layout()
@@ -478,17 +513,19 @@ def plot_identifiability_comparison(summaries: list[dict[str, Any]], plots_dir: 
     kls = [summary["metrics"]["mean_role_kl"] for summary in filtered]
     nlls = [summary["metrics"]["mean_role_nll"] for summary in filtered]
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
     kl_bars = axes[0].bar(labels, kls, color="#8172b3")
     axes[0].set_title("Role KL")
     axes[0].set_ylabel("KL [nats]")
-    axes[0].tick_params(axis="x", rotation=45)
+    axes[0].tick_params(axis="x", labelsize=8)
+    axes[0].margins(y=0.08)
     _annotate_bars(axes[0], kl_bars, kls)
 
     nll_bars = axes[1].bar(labels, nlls, color="#937860")
     axes[1].set_title("Role NLL")
     axes[1].set_ylabel("NLL [nats]")
-    axes[1].tick_params(axis="x", rotation=45)
+    axes[1].tick_params(axis="x", labelsize=8)
+    axes[1].margins(y=0.08)
     _annotate_bars(axes[1], nll_bars, nlls)
 
     fig.tight_layout()
@@ -517,17 +554,19 @@ def plot_posterior_uncertainty_comparison(summaries: list[dict[str, Any]], plots
         for summary in filtered
     ]
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
     std_bars = axes[0].bar(labels, mean_std, color="#4c72b0")
     axes[0].set_title("Role Posterior Std")
     axes[0].set_ylabel("Std [-]")
-    axes[0].tick_params(axis="x", rotation=45)
+    axes[0].tick_params(axis="x", labelsize=8)
+    axes[0].margins(y=0.08)
     _annotate_bars(axes[0], std_bars, mean_std)
 
     var_bars = axes[1].bar(labels, mean_var, color="#dd8452")
     axes[1].set_title("Role Posterior Variance")
     axes[1].set_ylabel("Variance [-]")
-    axes[1].tick_params(axis="x", rotation=45)
+    axes[1].tick_params(axis="x", labelsize=8)
+    axes[1].margins(y=0.08)
     _annotate_bars(axes[1], var_bars, mean_var)
 
     fig.tight_layout()
@@ -543,7 +582,7 @@ def plot_c1_decomposition(summaries: list[dict[str, Any]], plots_dir: Path) -> P
     if len(selected) < 2:
         return None
 
-    labels = [_display_label(summary["variant_id"]) for summary in selected]
+    labels = [_plot_label(summary["variant_id"]) for summary in selected]
     rewards = [summary["metrics"]["mean_episode_joint_reward"] for summary in selected]
     timeout = [summary["metrics"]["mean_timeout_ratio"] for summary in selected]
 
@@ -551,10 +590,12 @@ def plot_c1_decomposition(summaries: list[dict[str, Any]], plots_dir: Path) -> P
     reward_bars = axes[0].bar(labels, rewards, color="#64b5cd")
     axes[0].set_title("C1 Reward Decomposition")
     axes[0].set_ylabel("Reward [a.u.]")
+    axes[0].tick_params(axis="x", labelsize=8)
     _annotate_bars(axes[0], reward_bars, rewards)
     timeout_bars = axes[1].bar(labels, timeout, color="#da8bc3")
     axes[1].set_title("C1 Timeout Decomposition")
     axes[1].set_ylabel("Ratio [-]")
+    axes[1].tick_params(axis="x", labelsize=8)
     _annotate_bars(axes[1], timeout_bars, timeout)
     fig.tight_layout()
 
