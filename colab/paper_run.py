@@ -61,6 +61,15 @@ class RunSpec:
     output_root: Path
 
 
+@dataclass(frozen=True, slots=True)
+class ScaleRunProfile:
+    resource_scaling_mode: str
+    total_bandwidth_hz: float
+    server_cpu_ghz: float
+    u_slack: float
+    initial_offloading_mean_env: float
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Colab paper-grade training runner with auto-resume.")
     parser.add_argument("--workspace-root", type=Path, required=True)
@@ -84,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--initial-action-std-env", type=float, default=0.10)
     parser.add_argument("--initial-offloading-mean-env", type=float, default=0.75)
     parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
+    parser.add_argument("--large-scale-profile", choices=("default", "paper_scale_v1"), default="paper_scale_v1")
     parser.add_argument("--use-obs-scaling", choices=("true", "false"), default="false")
     parser.add_argument("--use-reward-scaling", choices=("true", "false"), default="true")
     parser.add_argument("--resource-scaling-mode", choices=("fixed", "linear_after_threshold"), default="linear_after_threshold")
@@ -117,6 +127,25 @@ def _torch_load_checkpoint(checkpoint_path: Path) -> dict[str, Any]:
         return torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     except TypeError:
         return torch.load(checkpoint_path, map_location="cpu")
+
+
+def resolve_scale_run_profile(spec: RunSpec, args: argparse.Namespace) -> ScaleRunProfile:
+    base_profile = ScaleRunProfile(
+        resource_scaling_mode=args.resource_scaling_mode,
+        total_bandwidth_hz=10e6,
+        server_cpu_ghz=25.0,
+        u_slack=1.5,
+        initial_offloading_mean_env=args.initial_offloading_mean_env,
+    )
+    if args.large_scale_profile != "paper_scale_v1":
+        return base_profile
+
+    tuned_profiles = {
+        10: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=20e6, server_cpu_ghz=60.0, u_slack=1.9, initial_offloading_mean_env=0.60),
+        15: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=30e6, server_cpu_ghz=90.0, u_slack=2.1, initial_offloading_mean_env=0.58),
+        20: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=40e6, server_cpu_ghz=120.0, u_slack=2.3, initial_offloading_mean_env=0.55),
+    }
+    return tuned_profiles.get(spec.num_agents, base_profile)
 
 
 def _checkpoint_priority(path: Path) -> int:
@@ -358,6 +387,7 @@ def _run_command(command: list[str], cwd: Path) -> None:
 
 
 def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | None) -> list[str]:
+    scale_profile = resolve_scale_run_profile(spec, args)
     command = [
         sys.executable,
         "-m",
@@ -396,10 +426,16 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
         str(args.lambda_var),
         "--sigma-floor",
         str(args.sigma_floor),
+        "--u-slack",
+        str(scale_profile.u_slack),
+        "--total-bandwidth-hz",
+        str(scale_profile.total_bandwidth_hz),
+        "--server-cpu-ghz",
+        str(scale_profile.server_cpu_ghz),
         "--initial-action-std-env",
         str(args.initial_action_std_env),
         "--initial-offloading-mean-env",
-        str(args.initial_offloading_mean_env),
+        str(scale_profile.initial_offloading_mean_env),
         "--initial-power-mean-env",
         str(args.initial_power_mean_env),
         "--use-obs-scaling",
@@ -407,7 +443,7 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
         "--use-reward-scaling",
         args.use_reward_scaling,
         "--resource-scaling-mode",
-        args.resource_scaling_mode,
+        scale_profile.resource_scaling_mode,
         "--resource-scaling-base-agents",
         str(args.resource_scaling_base_agents),
         "--resource-scaling-start-agents",
@@ -428,6 +464,7 @@ def _evaluate_command(
     results_dir: Path | None = None,
     trace_label: str | None = None,
 ) -> list[str]:
+    scale_profile = resolve_scale_run_profile(spec, args)
     command = [
         sys.executable,
         "-m",
@@ -440,8 +477,14 @@ def _evaluate_command(
         spec.stage_id,
         "--checkpoint-selection-rule",
         checkpoint_selection_rule,
+        "--u-slack",
+        str(scale_profile.u_slack),
+        "--total-bandwidth-hz",
+        str(scale_profile.total_bandwidth_hz),
+        "--server-cpu-ghz",
+        str(scale_profile.server_cpu_ghz),
         "--resource-scaling-mode",
-        args.resource_scaling_mode,
+        scale_profile.resource_scaling_mode,
         "--resource-scaling-base-agents",
         str(args.resource_scaling_base_agents),
         "--resource-scaling-start-agents",

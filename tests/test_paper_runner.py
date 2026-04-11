@@ -21,12 +21,57 @@ class PaperRunTests(unittest.TestCase):
         self.assertEqual(args.initial_action_std_env, 0.10)
         self.assertEqual(args.initial_offloading_mean_env, 0.75)
         self.assertEqual(args.initial_power_mean_env, 0.8)
+        self.assertEqual(args.large_scale_profile, "paper_scale_v1")
         self.assertEqual(args.use_obs_scaling, "false")
         self.assertEqual(args.use_reward_scaling, "true")
         self.assertEqual(args.resource_scaling_mode, "linear_after_threshold")
         self.assertEqual(args.resource_scaling_base_agents, 5)
         self.assertEqual(args.resource_scaling_start_agents, 10)
         self.assertEqual(args.checkpoint_selection_mode, "milestone_best")
+
+    def test_scale_profile_keeps_m5_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            args = paper_run.build_parser().parse_args(["--workspace-root", tmp_dir])
+            spec = paper_run.RunSpec(
+                stage_id="core",
+                variant_id="A1",
+                runner_kind="ppo",
+                num_agents=5,
+                seed=42,
+                episode_length=200,
+                train_episodes=4000,
+                eval_episodes=50,
+                output_root=Path(tmp_dir) / "core" / "m05" / "seed_42" / "a1",
+            )
+            profile = paper_run.resolve_scale_run_profile(spec, args)
+
+        self.assertEqual(profile.resource_scaling_mode, "linear_after_threshold")
+        self.assertEqual(profile.total_bandwidth_hz, 10e6)
+        self.assertEqual(profile.server_cpu_ghz, 25.0)
+        self.assertEqual(profile.u_slack, 1.5)
+        self.assertEqual(profile.initial_offloading_mean_env, 0.75)
+
+    def test_scale_profile_tunes_m10_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            args = paper_run.build_parser().parse_args(["--workspace-root", tmp_dir])
+            spec = paper_run.RunSpec(
+                stage_id="core",
+                variant_id="A1",
+                runner_kind="ppo",
+                num_agents=10,
+                seed=42,
+                episode_length=200,
+                train_episodes=4000,
+                eval_episodes=50,
+                output_root=Path(tmp_dir) / "core" / "m10" / "seed_42" / "a1",
+            )
+            profile = paper_run.resolve_scale_run_profile(spec, args)
+
+        self.assertEqual(profile.resource_scaling_mode, "fixed")
+        self.assertEqual(profile.total_bandwidth_hz, 20e6)
+        self.assertEqual(profile.server_cpu_ghz, 60.0)
+        self.assertEqual(profile.u_slack, 1.9)
+        self.assertEqual(profile.initial_offloading_mean_env, 0.60)
 
     def test_resolve_checkpoint_targets_includes_stage_milestones_and_final_episode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

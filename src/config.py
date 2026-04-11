@@ -234,6 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-cpu-dynamics", type=_str_to_bool, default=True)
     parser.add_argument("--delay-mode", choices=("li_original", "bestcase_slack"), default="bestcase_slack")
     parser.add_argument("--u-slack", type=float, default=1.5)
+    parser.add_argument("--total-bandwidth-hz", type=float, default=10e6)
+    parser.add_argument("--server-cpu-ghz", type=float, default=25.0)
     parser.add_argument("--resource-scaling-mode", choices=("fixed", "linear_after_threshold"), default="fixed")
     parser.add_argument("--resource-scaling-base-agents", type=int, default=5)
     parser.add_argument("--resource-scaling-start-agents", type=int, default=10)
@@ -287,6 +289,8 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         use_cpu_dynamics=args.use_cpu_dynamics,
         delay_mode=args.delay_mode,
         u_slack=args.u_slack,
+        total_bandwidth_hz=args.total_bandwidth_hz,
+        server_cpu_ghz=args.server_cpu_ghz,
         resource_scaling_mode=args.resource_scaling_mode,
         resource_scaling_base_agents=args.resource_scaling_base_agents,
         resource_scaling_start_agents=args.resource_scaling_start_agents,
