@@ -23,6 +23,9 @@ class PaperRunTests(unittest.TestCase):
         self.assertEqual(args.initial_power_mean_env, 0.8)
         self.assertEqual(args.use_obs_scaling, "false")
         self.assertEqual(args.use_reward_scaling, "true")
+        self.assertEqual(args.resource_scaling_mode, "linear_after_threshold")
+        self.assertEqual(args.resource_scaling_base_agents, 5)
+        self.assertEqual(args.resource_scaling_start_agents, 10)
         self.assertEqual(args.checkpoint_selection_mode, "milestone_best")
 
     def test_resolve_checkpoint_targets_includes_stage_milestones_and_final_episode(self) -> None:

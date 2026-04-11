@@ -14,7 +14,7 @@ class QAGBaselineSpec:
 
 
 def _max_tx_rate_bps(env: DynamicMECEnv) -> np.ndarray:
-    device_bandwidth_hz = env.config.total_bandwidth_hz / float(env.config.num_agents)
+    device_bandwidth_hz = env.config.effective_total_bandwidth_hz / float(env.config.num_agents)
     noise_power_w = env.config.noise_density_w_hz * device_bandwidth_hz
     tx_power_w = env.max_tx_powers_mw / 1000.0
     snr = (tx_power_w * env.channel_gains) / max(noise_power_w, 1e-12)
@@ -29,7 +29,7 @@ def queue_aware_greedy_actions(env: DynamicMECEnv) -> np.ndarray:
     beta_max_bps = _max_tx_rate_bps(env)
     task_work_gcycles = env.task_data_size_mb * env.task_density_gcycles_per_mb
     edge_queue = float(env.edge_queue)
-    server_freq = max(env.config.server_cpu_ghz, 1e-6)
+    server_freq = max(env.config.effective_server_cpu_ghz, 1e-6)
 
     for agent_idx in range(num_agents):
         local_queue = float(env.local_queues[agent_idx])

@@ -95,6 +95,9 @@ class EnvironmentConfig:
     total_bandwidth_hz: float = 10e6
     noise_density_dbm_hz: float = -174.0
     server_cpu_ghz: float = 25.0
+    resource_scaling_mode: str = "fixed"
+    resource_scaling_base_agents: int = 5
+    resource_scaling_start_agents: int = 10
     max_cpu_ghz: float = 3.0
     max_tx_power_mw: float = 300.0
     task_size_range_mb: tuple[float, float] = (0.16, 1.6)
@@ -116,6 +119,26 @@ class EnvironmentConfig:
     @property
     def noise_density_w_hz(self) -> float:
         return 10 ** ((self.noise_density_dbm_hz - 30.0) / 10.0)
+
+    @property
+    def resource_scale_factor(self) -> float:
+        if self.resource_scaling_mode == "fixed":
+            return 1.0
+        if self.resource_scaling_mode != "linear_after_threshold":
+            raise ValueError(f"Unsupported resource_scaling_mode: {self.resource_scaling_mode}")
+        if self.resource_scaling_base_agents <= 0:
+            raise ValueError("resource_scaling_base_agents must be positive.")
+        if self.num_agents < self.resource_scaling_start_agents:
+            return 1.0
+        return float(self.num_agents) / float(self.resource_scaling_base_agents)
+
+    @property
+    def effective_total_bandwidth_hz(self) -> float:
+        return self.total_bandwidth_hz * self.resource_scale_factor
+
+    @property
+    def effective_server_cpu_ghz(self) -> float:
+        return self.server_cpu_ghz * self.resource_scale_factor
 
     @property
     def actor_observation_dim(self) -> int:
@@ -211,6 +234,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-cpu-dynamics", type=_str_to_bool, default=True)
     parser.add_argument("--delay-mode", choices=("li_original", "bestcase_slack"), default="bestcase_slack")
     parser.add_argument("--u-slack", type=float, default=1.5)
+    parser.add_argument("--resource-scaling-mode", choices=("fixed", "linear_after_threshold"), default="fixed")
+    parser.add_argument("--resource-scaling-base-agents", type=int, default=5)
+    parser.add_argument("--resource-scaling-start-agents", type=int, default=10)
 
     parser.add_argument("--critic-type", choices=("pgcn", "mlp", "set"), default="pgcn")
     parser.add_argument("--use-role", type=_str_to_bool, default=True)
@@ -261,6 +287,9 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         use_cpu_dynamics=args.use_cpu_dynamics,
         delay_mode=args.delay_mode,
         u_slack=args.u_slack,
+        resource_scaling_mode=args.resource_scaling_mode,
+        resource_scaling_base_agents=args.resource_scaling_base_agents,
+        resource_scaling_start_agents=args.resource_scaling_start_agents,
     )
     model = ModelConfig(
         critic_type=args.critic_type,

@@ -173,7 +173,7 @@ class DynamicMECEnv:
         f_max_type_ghz = np.asarray([profile.cpu_range_ghz[1] for profile in self.device_profiles], dtype=np.float32)
         d_local_best_s = task_work_gcycles / np.maximum(f_max_type_ghz[:, None], 1e-6)
 
-        device_bandwidth_hz = self.config.total_bandwidth_hz / float(self.config.num_agents)
+        device_bandwidth_hz = self.config.effective_total_bandwidth_hz / float(self.config.num_agents)
         noise_power_w = self.config.noise_density_w_hz * device_bandwidth_hz
         tx_power_w = self.max_tx_powers_mw / 1000.0
         snr = (tx_power_w * self.channel_gains) / max(noise_power_w, 1e-12)
@@ -181,7 +181,7 @@ class DynamicMECEnv:
         beta_max_bps = np.maximum(beta_max_bps, self.config.min_rate_bps)
 
         tx_delay_best_s = (data_size_mb * 1e6) / beta_max_bps[:, None]
-        edge_compute_best_s = task_work_gcycles / max(self.config.server_cpu_ghz, 1e-6)
+        edge_compute_best_s = task_work_gcycles / max(self.config.effective_server_cpu_ghz, 1e-6)
         d_edge_best_s = tx_delay_best_s + edge_compute_best_s
         d_best_s = np.minimum(d_local_best_s, d_edge_best_s)
         delay_threshold_s = self.config.u_slack * d_best_s
@@ -244,7 +244,7 @@ class DynamicMECEnv:
             [
                 self._scale_queue_observation(float(self.edge_queue)),
                 self._scale_signed_queue_delta(delta_edge_queue),
-                self.config.server_cpu_ghz / 25.0,
+                self.config.effective_server_cpu_ghz / 25.0,
             ],
             dtype=np.float32,
         )
@@ -259,7 +259,7 @@ class DynamicMECEnv:
         edge_work = task_work * offload
 
         tx_power_w = (power_ratio * self.max_tx_powers_mw) / 1000.0
-        device_bandwidth_hz = self.config.total_bandwidth_hz / float(self.config.num_agents)
+        device_bandwidth_hz = self.config.effective_total_bandwidth_hz / float(self.config.num_agents)
         noise_power_w = self.config.noise_density_w_hz * device_bandwidth_hz
         snr = (tx_power_w * self.channel_gains) / max(noise_power_w, 1e-12)
         tx_rate_bps = device_bandwidth_hz * np.log2(1.0 + np.maximum(snr, 0.0))
@@ -353,7 +353,7 @@ class DynamicMECEnv:
         arrival_times_s: np.ndarray,
     ) -> tuple[np.ndarray, float]:
         edge_completion_s = np.zeros_like(edge_work, dtype=np.float32)
-        server_freq = max(self.config.server_cpu_ghz, 1e-6)
+        server_freq = max(self.config.effective_server_cpu_ghz, 1e-6)
         edge_available_s = self.edge_queue / server_freq
         arrivals: list[tuple[float, int, int, float]] = []
         remaining_edge_work = max(0.0, self.edge_queue - server_freq * self.config.dt)
@@ -393,7 +393,7 @@ class DynamicMECEnv:
         return float(np.clip(scaled, -2.0, 2.0))
 
     def _channel_ratio_reference(self) -> float:
-        device_bandwidth_hz = self.config.total_bandwidth_hz / float(self.config.num_agents)
+        device_bandwidth_hz = self.config.effective_total_bandwidth_hz / float(self.config.num_agents)
         noise_power_w = self.config.noise_density_w_hz * device_bandwidth_hz
         min_distance_km = max(self.config.min_distance_m / 1000.0, 1e-6)
         best_large_scale_gain = self.config.path_loss_kappa_linear * (min_distance_km ** (-self.config.path_loss_exp))
@@ -412,7 +412,7 @@ class DynamicMECEnv:
     def _update_channel_state(self) -> None:
         channel_gains = []
         channel_gain_ratios = []
-        device_bandwidth_hz = self.config.total_bandwidth_hz / float(self.config.num_agents)
+        device_bandwidth_hz = self.config.effective_total_bandwidth_hz / float(self.config.num_agents)
         noise_power_w = self.config.noise_density_w_hz * device_bandwidth_hz
 
         for distance_m in self.distances_m:

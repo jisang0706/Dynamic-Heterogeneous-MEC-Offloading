@@ -86,6 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
     parser.add_argument("--use-obs-scaling", choices=("true", "false"), default="false")
     parser.add_argument("--use-reward-scaling", choices=("true", "false"), default="true")
+    parser.add_argument("--resource-scaling-mode", choices=("fixed", "linear_after_threshold"), default="linear_after_threshold")
+    parser.add_argument("--resource-scaling-base-agents", type=int, default=5)
+    parser.add_argument("--resource-scaling-start-agents", type=int, default=10)
     parser.add_argument("--save-every-episodes", type=int, default=100)
     parser.add_argument("--checkpoint-selection-mode", choices=("final_only", "milestone_best"), default="milestone_best")
     parser.add_argument("--checkpoint-milestones", nargs="*", type=int, default=None)
@@ -403,6 +406,12 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
         args.use_obs_scaling,
         "--use-reward-scaling",
         args.use_reward_scaling,
+        "--resource-scaling-mode",
+        args.resource_scaling_mode,
+        "--resource-scaling-base-agents",
+        str(args.resource_scaling_base_agents),
+        "--resource-scaling-start-agents",
+        str(args.resource_scaling_start_agents),
         "--save-every-episodes",
         str(args.save_every_episodes),
     ]
@@ -430,6 +439,12 @@ def _evaluate_command(
         spec.stage_id,
         "--checkpoint-selection-rule",
         checkpoint_selection_rule,
+        "--resource-scaling-mode",
+        args.resource_scaling_mode,
+        "--resource-scaling-base-agents",
+        str(args.resource_scaling_base_agents),
+        "--resource-scaling-start-agents",
+        str(args.resource_scaling_start_agents),
     ]
     if checkpoint_path is not None:
         command.extend(["--checkpoint", str(checkpoint_path)])

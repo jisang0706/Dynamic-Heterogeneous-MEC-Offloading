@@ -59,6 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--distance-threshold-m", type=float, default=150.0)
     parser.add_argument("--use-mobility", type=_str_to_bool, default=True)
     parser.add_argument("--use-cpu-dynamics", type=_str_to_bool, default=True)
+    parser.add_argument("--resource-scaling-mode", choices=("fixed", "linear_after_threshold"), default="fixed")
+    parser.add_argument("--resource-scaling-base-agents", type=int, default=5)
+    parser.add_argument("--resource-scaling-start-agents", type=int, default=10)
     parser.add_argument("--protocol-stage", choices=("smoke", "core", "scale"), default=None)
     parser.add_argument("--checkpoint-selection-rule", type=str, default="final_checkpoint")
     return parser
@@ -367,6 +370,9 @@ def _build_fixed_policy(args: argparse.Namespace) -> LoadedPolicy:
         distance_threshold_m=args.distance_threshold_m,
         use_mobility=args.use_mobility,
         use_cpu_dynamics=args.use_cpu_dynamics,
+        resource_scaling_mode=args.resource_scaling_mode,
+        resource_scaling_base_agents=args.resource_scaling_base_agents,
+        resource_scaling_start_agents=args.resource_scaling_start_agents,
     )
     training = replace(base_config.training, run_mode="smoke", variant_id=args.variant_id)
     resolved_config, variant = apply_experiment_variant(replace(base_config, environment=environment, training=training), args.variant_id)
