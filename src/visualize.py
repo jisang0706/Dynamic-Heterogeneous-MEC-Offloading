@@ -182,6 +182,36 @@ def _summary_display_label(summary: dict[str, Any], fallback_index: int) -> str:
     return _plot_label(raw_label)
 
 
+def _comparison_width(num_items: int, *, min_width: float = 10.0, per_item: float = 1.8, max_width: float = 28.0) -> float:
+    return float(min(max(min_width, num_items * per_item), max_width))
+
+
+def _comparison_tick_fontsize(num_items: int) -> int:
+    if num_items <= 5:
+        return 9
+    if num_items <= 8:
+        return 8
+    if num_items <= 12:
+        return 7
+    return 6
+
+
+def _comparison_annotation_fontsize(num_items: int) -> int:
+    if num_items <= 5:
+        return 8
+    if num_items <= 8:
+        return 7
+    if num_items <= 12:
+        return 6
+    return 5
+
+
+def _set_bar_ticks(axis: Any, x: np.ndarray, labels: list[str], *, num_items: int) -> None:
+    axis.set_xticks(x, labels)
+    axis.tick_params(axis="x", labelsize=_comparison_tick_fontsize(num_items))
+    axis.margins(x=0.02)
+
+
 def discover_summary_files(results_dir: Path) -> list[Path]:
     return sorted(results_dir.glob("evaluation_*_summary.json"))
 
@@ -223,7 +253,9 @@ def aggregate_seed_summaries(summaries: list[dict[str, Any]]) -> list[dict[str, 
         "mean_edge_queue",
         "mean_local_queue",
         "mean_role_kl",
+        "mean_role_nll",
         "mean_role_std",
+        "mean_role_variance",
         "mean_near_zero_sigma_fraction",
     )
     aggregated: list[dict[str, Any]] = []
@@ -329,32 +361,39 @@ def plot_learning_curves(output_root: Path, plots_dir: Path) -> Path | None:
 
 
 def plot_summary_comparison(summaries: list[dict[str, Any]], plots_dir: Path) -> Path | None:
-    if not summaries:
+    aggregated = aggregate_seed_summaries(summaries)
+    if not aggregated:
         return None
 
-    labels = [_summary_display_label(summary, idx) for idx, summary in enumerate(summaries)]
-    reward = [summary["metrics"]["mean_episode_joint_reward"] for summary in summaries]
-    timeout = [summary["metrics"]["mean_timeout_ratio"] for summary in summaries]
-    cost = [summary["metrics"]["mean_task_processing_cost"] for summary in summaries]
+    labels = [_plot_label(item["label"], num_agents=item["num_agents"]) for item in aggregated]
+    reward_mean = [item["metrics"]["mean_episode_joint_reward"]["mean"] or 0.0 for item in aggregated]
+    reward_std = [item["metrics"]["mean_episode_joint_reward"]["std"] or 0.0 for item in aggregated]
+    timeout_mean = [item["metrics"]["mean_timeout_ratio"]["mean"] or 0.0 for item in aggregated]
+    timeout_std = [item["metrics"]["mean_timeout_ratio"]["std"] or 0.0 for item in aggregated]
+    cost_mean = [item["metrics"]["mean_task_processing_cost"]["mean"] or 0.0 for item in aggregated]
+    cost_std = [item["metrics"]["mean_task_processing_cost"]["std"] or 0.0 for item in aggregated]
 
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-    reward_bars = axes[0].bar(labels, reward, color="#c44e52")
+    x = np.arange(len(aggregated))
+    num_items = len(aggregated)
+    annotation_fontsize = _comparison_annotation_fontsize(num_items)
+    fig, axes = plt.subplots(1, 3, figsize=(_comparison_width(num_items, min_width=14.0), 5.2))
+    reward_bars = axes[0].bar(x, reward_mean, yerr=reward_std, color="#c44e52", capsize=4)
     axes[0].set_title("Mean Episode Joint Reward")
     axes[0].set_ylabel("Reward [a.u.]")
-    axes[0].tick_params(axis="x", labelsize=8)
-    _annotate_bars(axes[0], reward_bars, reward)
+    _set_bar_ticks(axes[0], x, labels, num_items=num_items)
+    _annotate_bars(axes[0], reward_bars, reward_mean, stds=reward_std, fontsize=annotation_fontsize)
 
-    timeout_bars = axes[1].bar(labels, timeout, color="#4c72b0")
+    timeout_bars = axes[1].bar(x, timeout_mean, yerr=timeout_std, color="#4c72b0", capsize=4)
     axes[1].set_title("Mean Timeout Ratio")
     axes[1].set_ylabel("Ratio [-]")
-    axes[1].tick_params(axis="x", labelsize=8)
-    _annotate_bars(axes[1], timeout_bars, timeout)
+    _set_bar_ticks(axes[1], x, labels, num_items=num_items)
+    _annotate_bars(axes[1], timeout_bars, timeout_mean, stds=timeout_std, fontsize=annotation_fontsize)
 
-    cost_bars = axes[2].bar(labels, cost, color="#55a868")
+    cost_bars = axes[2].bar(x, cost_mean, yerr=cost_std, color="#55a868", capsize=4)
     axes[2].set_title("Mean Task Cost")
     axes[2].set_ylabel("Normalized Cost [-]")
-    axes[2].tick_params(axis="x", labelsize=8)
-    _annotate_bars(axes[2], cost_bars, cost)
+    _set_bar_ticks(axes[2], x, labels, num_items=num_items)
+    _annotate_bars(axes[2], cost_bars, cost_mean, stds=cost_std, fontsize=annotation_fontsize)
 
     fig.tight_layout()
     output_path = plots_dir / "evaluation_comparison.png"
@@ -377,27 +416,26 @@ def plot_seed_aggregation_comparison(summaries: list[dict[str, Any]], plots_dir:
     queue_std = [item["metrics"]["mean_edge_queue"]["std"] or 0.0 for item in aggregated]
 
     x = np.arange(len(aggregated))
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    num_items = len(aggregated)
+    annotation_fontsize = _comparison_annotation_fontsize(num_items)
+    fig, axes = plt.subplots(1, 3, figsize=(_comparison_width(num_items, min_width=14.0), 5.2))
     reward_bars = axes[0].bar(x, reward_mean, yerr=reward_std, color="#c44e52", capsize=4)
     axes[0].set_title("Reward Mean ± Std")
     axes[0].set_ylabel("Reward [a.u.]")
-    axes[0].set_xticks(x, labels)
-    axes[0].tick_params(axis="x", labelsize=8)
-    _annotate_bars(axes[0], reward_bars, reward_mean, stds=reward_std)
+    _set_bar_ticks(axes[0], x, labels, num_items=num_items)
+    _annotate_bars(axes[0], reward_bars, reward_mean, stds=reward_std, fontsize=annotation_fontsize)
 
     timeout_bars = axes[1].bar(x, timeout_mean, yerr=timeout_std, color="#4c72b0", capsize=4)
     axes[1].set_title("Timeout Mean ± Std")
     axes[1].set_ylabel("Ratio [-]")
-    axes[1].set_xticks(x, labels)
-    axes[1].tick_params(axis="x", labelsize=8)
-    _annotate_bars(axes[1], timeout_bars, timeout_mean, stds=timeout_std)
+    _set_bar_ticks(axes[1], x, labels, num_items=num_items)
+    _annotate_bars(axes[1], timeout_bars, timeout_mean, stds=timeout_std, fontsize=annotation_fontsize)
 
     queue_bars = axes[2].bar(x, queue_mean, yerr=queue_std, color="#55a868", capsize=4)
     axes[2].set_title("Edge Queue Mean ± Std")
     axes[2].set_ylabel("Queue [Gcycles]")
-    axes[2].set_xticks(x, labels)
-    axes[2].tick_params(axis="x", labelsize=8)
-    _annotate_bars(axes[2], queue_bars, queue_mean, stds=queue_std)
+    _set_bar_ticks(axes[2], x, labels, num_items=num_items)
+    _annotate_bars(axes[2], queue_bars, queue_mean, stds=queue_std, fontsize=annotation_fontsize)
 
     fig.tight_layout()
     output_path = plots_dir / "seed_aggregation_comparison.png"
@@ -505,28 +543,34 @@ def plot_operational_mode_summary(summary: dict[str, Any], plots_dir: Path) -> P
 
 
 def plot_identifiability_comparison(summaries: list[dict[str, Any]], plots_dir: Path) -> Path | None:
-    filtered = [summary for summary in summaries if summary["metrics"].get("mean_role_kl") is not None]
+    aggregated = aggregate_seed_summaries(summaries)
+    filtered = [item for item in aggregated if item["metrics"].get("mean_role_kl", {}).get("mean") is not None]
     if not filtered:
         return None
 
-    labels = [_summary_display_label(summary, idx) for idx, summary in enumerate(filtered)]
-    kls = [summary["metrics"]["mean_role_kl"] for summary in filtered]
-    nlls = [summary["metrics"]["mean_role_nll"] for summary in filtered]
+    labels = [_plot_label(item["label"], num_agents=item["num_agents"]) for item in filtered]
+    kls = [item["metrics"]["mean_role_kl"]["mean"] or 0.0 for item in filtered]
+    kl_std = [item["metrics"]["mean_role_kl"]["std"] or 0.0 for item in filtered]
+    nlls = [item["metrics"]["mean_role_nll"]["mean"] or 0.0 for item in filtered]
+    nll_std = [item["metrics"]["mean_role_nll"]["std"] or 0.0 for item in filtered]
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-    kl_bars = axes[0].bar(labels, kls, color="#8172b3")
+    x = np.arange(len(filtered))
+    num_items = len(filtered)
+    annotation_fontsize = _comparison_annotation_fontsize(num_items)
+    fig, axes = plt.subplots(1, 2, figsize=(_comparison_width(num_items, min_width=11.0), 4.8))
+    kl_bars = axes[0].bar(x, kls, yerr=kl_std, color="#8172b3", capsize=4)
     axes[0].set_title("Role KL")
     axes[0].set_ylabel("KL [nats]")
-    axes[0].tick_params(axis="x", labelsize=8)
+    _set_bar_ticks(axes[0], x, labels, num_items=num_items)
     axes[0].margins(y=0.08)
-    _annotate_bars(axes[0], kl_bars, kls)
+    _annotate_bars(axes[0], kl_bars, kls, stds=kl_std, fontsize=annotation_fontsize)
 
-    nll_bars = axes[1].bar(labels, nlls, color="#937860")
+    nll_bars = axes[1].bar(x, nlls, yerr=nll_std, color="#937860", capsize=4)
     axes[1].set_title("Role NLL")
     axes[1].set_ylabel("NLL [nats]")
-    axes[1].tick_params(axis="x", labelsize=8)
+    _set_bar_ticks(axes[1], x, labels, num_items=num_items)
     axes[1].margins(y=0.08)
-    _annotate_bars(axes[1], nll_bars, nlls)
+    _annotate_bars(axes[1], nll_bars, nlls, stds=nll_std, fontsize=annotation_fontsize)
 
     fig.tight_layout()
     output_path = plots_dir / "identifiability_comparison.png"
@@ -536,38 +580,51 @@ def plot_identifiability_comparison(summaries: list[dict[str, Any]], plots_dir: 
 
 
 def plot_posterior_uncertainty_comparison(summaries: list[dict[str, Any]], plots_dir: Path) -> Path | None:
+    aggregated = aggregate_seed_summaries(summaries)
     filtered = [
-        summary
-        for summary in summaries
-        if summary["metrics"].get("mean_role_std") is not None or summary["metrics"].get("mean_role_variance") is not None
+        item
+        for item in aggregated
+        if item["metrics"].get("mean_role_std", {}).get("mean") is not None
+        or item["metrics"].get("mean_role_variance", {}).get("mean") is not None
     ]
     if not filtered:
         return None
 
-    labels = [_summary_display_label(summary, idx) for idx, summary in enumerate(filtered)]
+    labels = [_plot_label(item["label"], num_agents=item["num_agents"]) for item in filtered]
     mean_std = [
-        0.0 if summary["metrics"].get("mean_role_std") is None else float(summary["metrics"]["mean_role_std"])
-        for summary in filtered
+        0.0 if item["metrics"].get("mean_role_std", {}).get("mean") is None else float(item["metrics"]["mean_role_std"]["mean"])
+        for item in filtered
+    ]
+    std_std = [
+        0.0 if item["metrics"].get("mean_role_std", {}).get("std") is None else float(item["metrics"]["mean_role_std"]["std"])
+        for item in filtered
     ]
     mean_var = [
-        0.0 if summary["metrics"].get("mean_role_variance") is None else float(summary["metrics"]["mean_role_variance"])
-        for summary in filtered
+        0.0 if item["metrics"].get("mean_role_variance", {}).get("mean") is None else float(item["metrics"]["mean_role_variance"]["mean"])
+        for item in filtered
+    ]
+    var_std = [
+        0.0 if item["metrics"].get("mean_role_variance", {}).get("std") is None else float(item["metrics"]["mean_role_variance"]["std"])
+        for item in filtered
     ]
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-    std_bars = axes[0].bar(labels, mean_std, color="#4c72b0")
+    x = np.arange(len(filtered))
+    num_items = len(filtered)
+    annotation_fontsize = _comparison_annotation_fontsize(num_items)
+    fig, axes = plt.subplots(1, 2, figsize=(_comparison_width(num_items, min_width=11.0), 4.8))
+    std_bars = axes[0].bar(x, mean_std, yerr=std_std, color="#4c72b0", capsize=4)
     axes[0].set_title("Role Posterior Std")
     axes[0].set_ylabel("Std [-]")
-    axes[0].tick_params(axis="x", labelsize=8)
+    _set_bar_ticks(axes[0], x, labels, num_items=num_items)
     axes[0].margins(y=0.08)
-    _annotate_bars(axes[0], std_bars, mean_std)
+    _annotate_bars(axes[0], std_bars, mean_std, stds=std_std, fontsize=annotation_fontsize)
 
-    var_bars = axes[1].bar(labels, mean_var, color="#dd8452")
+    var_bars = axes[1].bar(x, mean_var, yerr=var_std, color="#dd8452", capsize=4)
     axes[1].set_title("Role Posterior Variance")
     axes[1].set_ylabel("Variance [-]")
-    axes[1].tick_params(axis="x", labelsize=8)
+    _set_bar_ticks(axes[1], x, labels, num_items=num_items)
     axes[1].margins(y=0.08)
-    _annotate_bars(axes[1], var_bars, mean_var)
+    _annotate_bars(axes[1], var_bars, mean_var, stds=var_std, fontsize=annotation_fontsize)
 
     fig.tight_layout()
     output_path = plots_dir / "posterior_uncertainty_comparison.png"
@@ -578,25 +635,31 @@ def plot_posterior_uncertainty_comparison(summaries: list[dict[str, Any]], plots
 
 def plot_c1_decomposition(summaries: list[dict[str, Any]], plots_dir: Path) -> Path | None:
     target_variants = {"A1", "A3", "A6A", "A6B"}
-    selected = [summary for summary in summaries if summary.get("variant_id") in target_variants]
+    aggregated = aggregate_seed_summaries(summaries)
+    selected = [item for item in aggregated if item.get("variant_id") in target_variants]
     if len(selected) < 2:
         return None
 
-    labels = [_plot_label(summary["variant_id"]) for summary in selected]
-    rewards = [summary["metrics"]["mean_episode_joint_reward"] for summary in selected]
-    timeout = [summary["metrics"]["mean_timeout_ratio"] for summary in selected]
+    labels = [_plot_label(item["variant_id"], num_agents=item["num_agents"]) for item in selected]
+    rewards = [item["metrics"]["mean_episode_joint_reward"]["mean"] or 0.0 for item in selected]
+    reward_std = [item["metrics"]["mean_episode_joint_reward"]["std"] or 0.0 for item in selected]
+    timeout = [item["metrics"]["mean_timeout_ratio"]["mean"] or 0.0 for item in selected]
+    timeout_std = [item["metrics"]["mean_timeout_ratio"]["std"] or 0.0 for item in selected]
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-    reward_bars = axes[0].bar(labels, rewards, color="#64b5cd")
+    x = np.arange(len(selected))
+    num_items = len(selected)
+    annotation_fontsize = _comparison_annotation_fontsize(num_items)
+    fig, axes = plt.subplots(1, 2, figsize=(_comparison_width(num_items, min_width=10.0, max_width=18.0), 4.2))
+    reward_bars = axes[0].bar(x, rewards, yerr=reward_std, color="#64b5cd", capsize=4)
     axes[0].set_title("C1 Reward Decomposition")
     axes[0].set_ylabel("Reward [a.u.]")
-    axes[0].tick_params(axis="x", labelsize=8)
-    _annotate_bars(axes[0], reward_bars, rewards)
-    timeout_bars = axes[1].bar(labels, timeout, color="#da8bc3")
+    _set_bar_ticks(axes[0], x, labels, num_items=num_items)
+    _annotate_bars(axes[0], reward_bars, rewards, stds=reward_std, fontsize=annotation_fontsize)
+    timeout_bars = axes[1].bar(x, timeout, yerr=timeout_std, color="#da8bc3", capsize=4)
     axes[1].set_title("C1 Timeout Decomposition")
     axes[1].set_ylabel("Ratio [-]")
-    axes[1].tick_params(axis="x", labelsize=8)
-    _annotate_bars(axes[1], timeout_bars, timeout)
+    _set_bar_ticks(axes[1], x, labels, num_items=num_items)
+    _annotate_bars(axes[1], timeout_bars, timeout, stds=timeout_std, fontsize=annotation_fontsize)
     fig.tight_layout()
 
     output_path = plots_dir / "c1_decomposition.png"
