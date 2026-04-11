@@ -422,6 +422,7 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
 
 def _evaluate_command(
     spec: RunSpec,
+    args: argparse.Namespace,
     checkpoint_path: Path | None,
     checkpoint_selection_rule: str,
     results_dir: Path | None = None,
@@ -554,6 +555,7 @@ def ensure_evaluation(
                 _run_command(
                     _evaluate_command(
                         spec,
+                        args,
                         checkpoint_path=candidate.path,
                         checkpoint_selection_rule=candidate.selection_rule,
                         results_dir=sweep_dir,
@@ -591,7 +593,12 @@ def ensure_evaluation(
         return summary_path, checkpoint_path, checkpoint_selection_rule
 
     _run_command(
-        _evaluate_command(spec, checkpoint_path=checkpoint_path, checkpoint_selection_rule=checkpoint_selection_rule),
+        _evaluate_command(
+            spec,
+            args,
+            checkpoint_path=checkpoint_path,
+            checkpoint_selection_rule=checkpoint_selection_rule,
+        ),
         cwd=repo_root,
     )
     refreshed_summary = discover_summary_file(spec)
