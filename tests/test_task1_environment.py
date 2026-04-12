@@ -84,6 +84,57 @@ class Task1EnvironmentTests(unittest.TestCase):
 
         self.assertTrue(done)
 
+    def test_li_style_intra_slot_ordering_reduces_small_task_delay(self) -> None:
+        config = EnvironmentConfig(num_agents=1, episode_length=1, use_mobility=False, use_cpu_dynamics=False)
+        env = DynamicMECEnv(config, seed=23)
+        env.reset()
+        env.local_queues[:] = 0.0
+        env.edge_queue = 0.0
+        env.prev_edge_queue = 0.0
+        env.cpu_freqs_ghz[:] = np.asarray([1.0], dtype=np.float32)
+        env.max_tx_powers_mw[:] = np.asarray([300.0], dtype=np.float32)
+        env.channel_gains[:] = np.asarray([1.0], dtype=np.float32)
+        env.task_matrix = np.asarray(
+            [
+                [
+                    [1.0, 3.0, 10.0],
+                    [1.0, 1.0, 10.0],
+                    [1.0, 2.0, 10.0],
+                ]
+            ],
+            dtype=np.float32,
+        )
+
+        no_offload_action = np.zeros((1, config.num_tasks_per_step + 1), dtype=np.float32)
+        _, _, _, _ = env.step(no_offload_action)
+        local_only_delays = env.last_reward_breakdown["task_completion_delay_s"][0]
+        self.assertLess(local_only_delays[1], local_only_delays[2])
+        self.assertLess(local_only_delays[2], local_only_delays[0])
+
+        env.reset()
+        env.local_queues[:] = 0.0
+        env.edge_queue = 0.0
+        env.prev_edge_queue = 0.0
+        env.cpu_freqs_ghz[:] = np.asarray([3.0], dtype=np.float32)
+        env.max_tx_powers_mw[:] = np.asarray([300.0], dtype=np.float32)
+        env.channel_gains[:] = np.asarray([1.0], dtype=np.float32)
+        env.task_matrix = np.asarray(
+            [
+                [
+                    [3.0, 1.0, 10.0],
+                    [1.0, 1.0, 10.0],
+                    [2.0, 1.0, 10.0],
+                ]
+            ],
+            dtype=np.float32,
+        )
+
+        full_offload_action = np.ones((1, config.num_tasks_per_step + 1), dtype=np.float32)
+        _, _, _, _ = env.step(full_offload_action)
+        edge_only_delays = env.last_reward_breakdown["task_completion_delay_s"][0]
+        self.assertLess(edge_only_delays[1], edge_only_delays[2])
+        self.assertLess(edge_only_delays[2], edge_only_delays[0])
+
 
 if __name__ == "__main__":
     unittest.main()

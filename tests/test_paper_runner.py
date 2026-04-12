@@ -21,7 +21,7 @@ class PaperRunTests(unittest.TestCase):
         self.assertEqual(args.initial_action_std_env, 0.10)
         self.assertEqual(args.initial_offloading_mean_env, 0.75)
         self.assertEqual(args.initial_power_mean_env, 0.8)
-        self.assertEqual(args.large_scale_profile, "paper_scale_v1")
+        self.assertEqual(args.large_scale_profile, "paper_scale_v2")
         self.assertEqual(args.use_obs_scaling, "false")
         self.assertEqual(args.use_reward_scaling, "true")
         self.assertEqual(args.resource_scaling_mode, "linear_after_threshold")
@@ -50,6 +50,7 @@ class PaperRunTests(unittest.TestCase):
         self.assertEqual(profile.server_cpu_ghz, 25.0)
         self.assertEqual(profile.u_slack, 1.5)
         self.assertEqual(profile.initial_offloading_mean_env, 0.75)
+        self.assertEqual(profile.initial_power_mean_env, 0.8)
 
     def test_scale_profile_tunes_m10_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -69,9 +70,10 @@ class PaperRunTests(unittest.TestCase):
 
         self.assertEqual(profile.resource_scaling_mode, "fixed")
         self.assertEqual(profile.total_bandwidth_hz, 20e6)
-        self.assertEqual(profile.server_cpu_ghz, 60.0)
-        self.assertEqual(profile.u_slack, 1.9)
-        self.assertEqual(profile.initial_offloading_mean_env, 0.60)
+        self.assertEqual(profile.server_cpu_ghz, 70.0)
+        self.assertEqual(profile.u_slack, 2.1)
+        self.assertEqual(profile.initial_offloading_mean_env, 0.55)
+        self.assertEqual(profile.initial_power_mean_env, 0.90)
 
     def test_resolve_checkpoint_targets_includes_stage_milestones_and_final_episode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

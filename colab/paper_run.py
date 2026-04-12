@@ -68,6 +68,7 @@ class ScaleRunProfile:
     server_cpu_ghz: float
     u_slack: float
     initial_offloading_mean_env: float
+    initial_power_mean_env: float
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -93,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--initial-action-std-env", type=float, default=0.10)
     parser.add_argument("--initial-offloading-mean-env", type=float, default=0.75)
     parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
-    parser.add_argument("--large-scale-profile", choices=("default", "paper_scale_v1"), default="paper_scale_v1")
+    parser.add_argument("--large-scale-profile", choices=("default", "paper_scale_v1", "paper_scale_v2"), default="paper_scale_v2")
     parser.add_argument("--use-obs-scaling", choices=("true", "false"), default="false")
     parser.add_argument("--use-reward-scaling", choices=("true", "false"), default="true")
     parser.add_argument("--resource-scaling-mode", choices=("fixed", "linear_after_threshold"), default="linear_after_threshold")
@@ -136,14 +137,23 @@ def resolve_scale_run_profile(spec: RunSpec, args: argparse.Namespace) -> ScaleR
         server_cpu_ghz=25.0,
         u_slack=1.5,
         initial_offloading_mean_env=args.initial_offloading_mean_env,
+        initial_power_mean_env=args.initial_power_mean_env,
     )
-    if args.large_scale_profile != "paper_scale_v1":
+    if args.large_scale_profile == "default":
         return base_profile
 
+    if args.large_scale_profile == "paper_scale_v1":
+        tuned_profiles = {
+            10: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=20e6, server_cpu_ghz=60.0, u_slack=1.9, initial_offloading_mean_env=0.60, initial_power_mean_env=args.initial_power_mean_env),
+            15: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=30e6, server_cpu_ghz=90.0, u_slack=2.1, initial_offloading_mean_env=0.58, initial_power_mean_env=args.initial_power_mean_env),
+            20: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=40e6, server_cpu_ghz=120.0, u_slack=2.3, initial_offloading_mean_env=0.55, initial_power_mean_env=args.initial_power_mean_env),
+        }
+        return tuned_profiles.get(spec.num_agents, base_profile)
+
     tuned_profiles = {
-        10: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=20e6, server_cpu_ghz=60.0, u_slack=1.9, initial_offloading_mean_env=0.60),
-        15: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=30e6, server_cpu_ghz=90.0, u_slack=2.1, initial_offloading_mean_env=0.58),
-        20: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=40e6, server_cpu_ghz=120.0, u_slack=2.3, initial_offloading_mean_env=0.55),
+        10: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=20e6, server_cpu_ghz=70.0, u_slack=2.1, initial_offloading_mean_env=0.55, initial_power_mean_env=0.90),
+        15: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=30e6, server_cpu_ghz=105.0, u_slack=2.3, initial_offloading_mean_env=0.52, initial_power_mean_env=0.92),
+        20: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=40e6, server_cpu_ghz=140.0, u_slack=2.5, initial_offloading_mean_env=0.50, initial_power_mean_env=0.95),
     }
     return tuned_profiles.get(spec.num_agents, base_profile)
 
@@ -437,7 +447,7 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
         "--initial-offloading-mean-env",
         str(scale_profile.initial_offloading_mean_env),
         "--initial-power-mean-env",
-        str(args.initial_power_mean_env),
+        str(scale_profile.initial_power_mean_env),
         "--use-obs-scaling",
         args.use_obs_scaling,
         "--use-reward-scaling",

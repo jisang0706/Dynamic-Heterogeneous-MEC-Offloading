@@ -257,6 +257,7 @@ class DynamicMECEnv:
         task_work = self.task_data_size_mb * self.task_density_gcycles_per_mb
         local_work = task_work * (1.0 - offload)
         edge_work = task_work * offload
+        offloaded_bits = self.task_data_size_mb * offload * 1e6
 
         tx_power_w = (power_ratio * self.max_tx_powers_mw) / 1000.0
         device_bandwidth_hz = self.config.effective_total_bandwidth_hz / float(self.config.num_agents)
@@ -280,17 +281,18 @@ class DynamicMECEnv:
             power_w = float(tx_power_w[device_idx])
             cpu_freq = max(float(self.cpu_freqs_ghz[device_idx]), 1e-6)
 
-            for task_idx in range(self.config.num_tasks_per_step):
+            local_order = np.argsort(local_work[device_idx], kind="stable")
+            for task_idx in local_order:
                 local_piece = float(local_work[device_idx, task_idx])
-                edge_piece = float(edge_work[device_idx, task_idx])
-
                 if local_piece > 0.0:
                     local_cumulative += local_piece
                     local_completion_s[device_idx, task_idx] = (local_backlog + local_cumulative) / cpu_freq
 
+            tx_order = np.argsort(offloaded_bits[device_idx], kind="stable")
+            for task_idx in tx_order:
+                edge_piece = float(edge_work[device_idx, task_idx])
                 if edge_piece > 0.0:
-                    offloaded_bits = float(self.task_data_size_mb[device_idx, task_idx] * offload[device_idx, task_idx] * 1e6)
-                    tx_duration_s = offloaded_bits / rate_bps
+                    tx_duration_s = float(offloaded_bits[device_idx, task_idx]) / rate_bps
                     tx_cumulative += tx_duration_s
                     transmission_finish_s[device_idx, task_idx] = tx_cumulative
                     tx_energy_j[device_idx, task_idx] = power_w * tx_duration_s
