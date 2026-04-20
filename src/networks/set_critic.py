@@ -21,7 +21,7 @@ class SetCritic(nn.Module):
         relu_gain = nn.init.calculate_gain("relu")
         self.device_encoder = orthogonal_init(nn.Linear(device_dim, hidden_dim), gain=relu_gain)
         self.server_encoder = orthogonal_init(nn.Linear(server_dim, hidden_dim), gain=relu_gain)
-        self.fc1 = orthogonal_init(nn.Linear(hidden_dim * 2, head_hidden_dim), gain=relu_gain)
+        self.fc1 = orthogonal_init(nn.Linear(hidden_dim * 3, head_hidden_dim), gain=relu_gain)
         self.fc2 = orthogonal_init(nn.Linear(head_hidden_dim, 1), gain=1.0)
 
     def forward(self, device_obs: torch.Tensor, server_obs: torch.Tensor) -> torch.Tensor:
@@ -37,5 +37,8 @@ class SetCritic(nn.Module):
         device_emb = torch.relu(self.device_encoder(device_obs))
         pooled_devices = device_emb.mean(dim=1)
         server_emb = torch.relu(self.server_encoder(server_obs))
-        critic_input = torch.cat([server_emb, pooled_devices], dim=-1)
-        return self.fc2(torch.relu(self.fc1(critic_input)))
+        num_agents = device_emb.shape[1]
+        shared_server = server_emb.unsqueeze(1).expand(-1, num_agents, -1)
+        shared_pool = pooled_devices.unsqueeze(1).expand(-1, num_agents, -1)
+        critic_input = torch.cat([device_emb, shared_pool, shared_server], dim=-1)
+        return self.fc2(torch.relu(self.fc1(critic_input))).squeeze(-1)

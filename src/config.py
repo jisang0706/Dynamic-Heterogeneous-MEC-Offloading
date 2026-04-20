@@ -170,8 +170,8 @@ class ModelConfig:
     role_hidden_dim: int = 12
     trajectory_hidden_dim: int = 64
     action_dim: int = 4
-    initial_action_std_env: float = 0.10
-    initial_offloading_mean_env: float = 0.75
+    initial_action_std_env: float = 0.15
+    initial_offloading_mean_env: float = 0.70
     initial_power_mean_env: float = 0.8
 
 
@@ -184,7 +184,8 @@ class TrainingConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     ppo_clip: float = 0.05
-    entropy_coeff: float = 0.001
+    entropy_coeff: float = 0.002
+    local_reward_weight: float = 0.8
     l_i_coeff: float = 1e-4
     l_d_coeff: float = 1e-3
     lambda_var: float = 1e-5
@@ -197,7 +198,7 @@ class TrainingConfig:
     smoke_steps: int = 8
     trajectory_window: int = 20
     trajectory_action_scale: float = 10.0
-    use_obs_scaling: bool = False
+    use_obs_scaling: bool = True
     use_reward_scaling: bool = True
     save_every_episodes: int = 100
 
@@ -247,8 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--actor-type", choices=("shared", "individual"), default="shared")
     parser.add_argument("--role-dim", type=int, default=3)
     parser.add_argument("--actor-hidden-dim", type=int, default=128)
-    parser.add_argument("--initial-action-std-env", type=float, default=0.10)
-    parser.add_argument("--initial-offloading-mean-env", type=float, default=0.75)
+    parser.add_argument("--initial-action-std-env", type=float, default=0.15)
+    parser.add_argument("--initial-offloading-mean-env", type=float, default=0.70)
     parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
 
     parser.add_argument("--learning-rate", type=float, default=2e-4)
@@ -258,7 +259,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--ppo-clip", type=float, default=0.05)
-    parser.add_argument("--entropy-coeff", type=float, default=0.001)
+    parser.add_argument("--entropy-coeff", type=float, default=0.002)
+    parser.add_argument("--local-reward-weight", type=float, default=0.8)
     parser.add_argument("--l-i-coeff", type=float, default=1e-4)
     parser.add_argument("--l-d-coeff", type=float, default=1e-3)
     parser.add_argument("--lambda-var", type=float, default=1e-5)
@@ -271,7 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--smoke-steps", type=int, default=8)
     parser.add_argument("--trajectory-window", type=int, default=20)
     parser.add_argument("--trajectory-action-scale", type=float, default=10.0)
-    parser.add_argument("--use-obs-scaling", type=_str_to_bool, default=False)
+    parser.add_argument("--use-obs-scaling", type=_str_to_bool, default=True)
     parser.add_argument("--use-reward-scaling", type=_str_to_bool, default=True)
     parser.add_argument("--save-every-episodes", type=int, default=100)
     parser.add_argument("--run-feasibility-audit", type=_str_to_bool, default=False)
@@ -316,6 +318,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         gae_lambda=args.gae_lambda,
         ppo_clip=args.ppo_clip,
         entropy_coeff=args.entropy_coeff,
+        local_reward_weight=args.local_reward_weight,
         l_i_coeff=args.l_i_coeff,
         l_d_coeff=args.l_d_coeff,
         lambda_var=args.lambda_var,

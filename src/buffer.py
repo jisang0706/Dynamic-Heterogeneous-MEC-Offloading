@@ -19,10 +19,11 @@ class Transition:
     log_prob: np.ndarray
     reward: np.ndarray
     done: bool
+    scaled_reward: np.ndarray | float | None = None
     positions: np.ndarray | None = None
     joint_reward: float | None = None
     scaled_joint_reward: float | None = None
-    value: float | None = None
+    value: np.ndarray | float | None = None
     timeout_ratio: float | None = None
 
     @property
@@ -63,7 +64,14 @@ class RolloutBuffer:
     def mean_scaled_joint_reward(self) -> float:
         if not self.transitions:
             return 0.0
-        return float(np.mean([self._scaled_joint_reward(transition) for transition in self.transitions]))
+        return float(
+            np.mean(
+                [
+                    float(np.asarray(self._scaled_reward(transition), dtype=np.float32).sum())
+                    for transition in self.transitions
+                ]
+            )
+        )
 
     def build_agent_trajectory_batch(
         self,
@@ -132,12 +140,12 @@ class RolloutBuffer:
             raise ValueError("RolloutBuffer is empty.")
 
         rewards = torch.as_tensor(
-            [self._scaled_joint_reward(transition) for transition in self.transitions],
+            np.stack([self._scaled_reward(transition) for transition in self.transitions]),
             dtype=torch.float32,
             device=device,
         )
         values = torch.as_tensor(
-            [self._value(transition) for transition in self.transitions],
+            np.stack([self._value(transition) for transition in self.transitions]),
             dtype=torch.float32,
             device=device,
         )
@@ -146,15 +154,39 @@ class RolloutBuffer:
             dtype=torch.float32,
             device=device,
         )
-        advantages, returns = compute_gae(
-            rewards=rewards,
-            values=values,
-            dones=dones,
-            gamma=gamma,
-            gae_lambda=gae_lambda,
-            last_value=last_value,
-            normalize_advantages=normalize_advantages,
-        )
+        if rewards.dim() == 1:
+            advantages, returns = compute_gae(
+                rewards=rewards,
+                values=values,
+                dones=dones,
+                gamma=gamma,
+                gae_lambda=gae_lambda,
+                last_value=last_value,
+                normalize_advantages=normalize_advantages,
+            )
+        else:
+            if values.shape != rewards.shape:
+                raise ValueError(f"values shape {tuple(values.shape)} must match rewards shape {tuple(rewards.shape)}")
+            if isinstance(last_value, torch.Tensor):
+                last_value_tensor = last_value.to(device=device, dtype=torch.float32)
+            else:
+                last_value_tensor = torch.as_tensor(last_value, dtype=torch.float32, device=device)
+            if last_value_tensor.dim() == 0:
+                last_value_tensor = last_value_tensor.expand(rewards.shape[1])
+            advantages = torch.zeros_like(rewards)
+            returns = torch.zeros_like(rewards)
+            for agent_idx in range(rewards.shape[1]):
+                agent_advantage, agent_return = compute_gae(
+                    rewards=rewards[:, agent_idx],
+                    values=values[:, agent_idx],
+                    dones=dones,
+                    gamma=gamma,
+                    gae_lambda=gae_lambda,
+                    last_value=last_value_tensor[agent_idx],
+                    normalize_advantages=normalize_advantages,
+                )
+                advantages[:, agent_idx] = agent_advantage
+                returns[:, agent_idx] = agent_return
         return {
             "joint_reward": rewards,
             "value": values,
@@ -192,7 +224,7 @@ class RolloutBuffer:
                 [self._scaled_joint_reward(item) for item in self.transitions],
                 dtype=np.float32,
             ),
-            "value": np.asarray([self._value(item) for item in self.transitions], dtype=np.float32),
+            "value": np.stack([self._value(item) for item in self.transitions]).astype(np.float32),
             "timeout_ratio": np.asarray([self._timeout_ratio(item) for item in self.transitions], dtype=np.float32),
             "done": np.asarray([item.done for item in self.transitions], dtype=np.float32),
         }
@@ -205,16 +237,41 @@ class RolloutBuffer:
         return float(np.sum(transition.reward))
 
     @staticmethod
-    def _value(transition: Transition) -> float:
+    def _value(transition: Transition) -> np.ndarray:
         if transition.value is not None:
-            return float(transition.value)
-        return 0.0
+            value = np.asarray(transition.value, dtype=np.float32)
+            reward = np.asarray(transition.reward, dtype=np.float32)
+            if value.ndim == 0 and reward.ndim > 0:
+                return np.full_like(reward, float(value), dtype=np.float32)
+            return value
+        return np.zeros_like(np.asarray(transition.reward, dtype=np.float32), dtype=np.float32)
 
     @staticmethod
     def _scaled_joint_reward(transition: Transition) -> float:
         if transition.scaled_joint_reward is not None:
             return float(transition.scaled_joint_reward)
         return RolloutBuffer._joint_reward(transition)
+
+    @staticmethod
+    def _scaled_reward(transition: Transition) -> np.ndarray:
+        if transition.scaled_reward is not None:
+            scaled_reward = np.asarray(transition.scaled_reward, dtype=np.float32)
+            reward = np.asarray(transition.reward, dtype=np.float32)
+            if scaled_reward.ndim == 0 and reward.ndim > 0:
+                return np.full_like(
+                    reward,
+                    float(scaled_reward) / max(reward.shape[0], 1),
+                    dtype=np.float32,
+                )
+            return scaled_reward
+        reward = np.asarray(transition.reward, dtype=np.float32)
+        if transition.scaled_joint_reward is not None and reward.ndim > 0:
+            return np.full_like(
+                reward,
+                float(transition.scaled_joint_reward) / max(reward.shape[0], 1),
+                dtype=np.float32,
+            )
+        return reward
 
     @staticmethod
     def _timeout_ratio(transition: Transition) -> float:

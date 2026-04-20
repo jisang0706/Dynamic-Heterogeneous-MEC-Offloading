@@ -86,16 +86,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ppo-epochs", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
     parser.add_argument("--ppo-clip", type=float, default=0.05)
-    parser.add_argument("--entropy-coeff", type=float, default=1e-3)
+    parser.add_argument("--entropy-coeff", type=float, default=2e-3)
     parser.add_argument("--gradient-clip", type=float, default=1.0)
+    parser.add_argument("--local-reward-weight", type=float, default=0.8)
     parser.add_argument("--l-i-coeff", type=float, default=1e-4)
     parser.add_argument("--lambda-var", type=float, default=1e-5)
     parser.add_argument("--sigma-floor", type=float, default=0.05)
-    parser.add_argument("--initial-action-std-env", type=float, default=0.10)
-    parser.add_argument("--initial-offloading-mean-env", type=float, default=0.75)
+    parser.add_argument("--initial-action-std-env", type=float, default=0.15)
+    parser.add_argument("--initial-offloading-mean-env", type=float, default=0.70)
     parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
     parser.add_argument("--large-scale-profile", choices=("default", "paper_scale_v1", "paper_scale_v2"), default="paper_scale_v2")
-    parser.add_argument("--use-obs-scaling", choices=("true", "false"), default="false")
+    parser.add_argument("--use-obs-scaling", choices=("true", "false"), default="true")
     parser.add_argument("--use-reward-scaling", choices=("true", "false"), default="true")
     parser.add_argument("--resource-scaling-mode", choices=("fixed", "linear_after_threshold"), default="linear_after_threshold")
     parser.add_argument("--resource-scaling-base-agents", type=int, default=5)
@@ -131,6 +132,8 @@ def _torch_load_checkpoint(checkpoint_path: Path) -> dict[str, Any]:
 
 
 def resolve_scale_run_profile(spec: RunSpec, args: argparse.Namespace) -> ScaleRunProfile:
+    # Keep the environment definition shared across methods and only use mild
+    # profile tuning to avoid the worst timeout-saturation regime at larger M.
     base_profile = ScaleRunProfile(
         resource_scaling_mode=args.resource_scaling_mode,
         total_bandwidth_hz=10e6,
@@ -428,6 +431,8 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
         str(args.ppo_clip),
         "--entropy-coeff",
         str(args.entropy_coeff),
+        "--local-reward-weight",
+        str(args.local_reward_weight),
         "--gradient-clip",
         str(args.gradient_clip),
         "--l-i-coeff",

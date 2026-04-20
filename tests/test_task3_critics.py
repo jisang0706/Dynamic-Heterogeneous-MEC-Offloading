@@ -16,7 +16,7 @@ class Task3CriticTests(unittest.TestCase):
 
         value = critic(device_obs, server_obs)
 
-        self.assertEqual(tuple(value.shape), (1, 1))
+        self.assertEqual(tuple(value.shape), (1, 5))
 
     def test_mlp_critic_accepts_batched_inputs(self) -> None:
         critic = MLPCritic(obs_dim=14, num_agents=5, central_obs_dim=3, hidden_dim=200)
@@ -25,7 +25,7 @@ class Task3CriticTests(unittest.TestCase):
 
         value = critic(device_obs, server_obs)
 
-        self.assertEqual(tuple(value.shape), (4, 1))
+        self.assertEqual(tuple(value.shape), (4, 5))
 
     def test_set_critic_uses_server_preserving_readout(self) -> None:
         critic = SetCritic(device_dim=14, server_dim=3, hidden_dim=64, head_hidden_dim=128)
@@ -34,8 +34,8 @@ class Task3CriticTests(unittest.TestCase):
 
         value = critic(device_obs, server_obs)
 
-        self.assertEqual(tuple(value.shape), (3, 1))
-        self.assertEqual(critic.fc1.in_features, 128)
+        self.assertEqual(tuple(value.shape), (3, 5))
+        self.assertEqual(critic.fc1.in_features, 192)
 
     def test_pgcn_critic_accepts_graph_batch_fallback(self) -> None:
         builder = GraphBuilder(num_devices=5, graph_type="star")
@@ -46,7 +46,7 @@ class Task3CriticTests(unittest.TestCase):
 
         value = critic(device_obs, server_obs, graph=graph)
 
-        self.assertEqual(tuple(value.shape), (1, 1))
+        self.assertEqual(tuple(value.shape), (1, 5))
 
     def test_pgcn_critic_accepts_pyg_data_when_available(self) -> None:
         try:
@@ -64,7 +64,7 @@ class Task3CriticTests(unittest.TestCase):
 
         value = critic(device_obs, server_obs, graph=graph.to_pyg_data())
 
-        self.assertEqual(tuple(value.shape), (1, 1))
+        self.assertEqual(tuple(value.shape), (1, 3))
 
     def test_pgcn_forward_supports_all_target_agent_counts(self) -> None:
         for num_agents in (5, 10, 15, 20):
@@ -76,7 +76,7 @@ class Task3CriticTests(unittest.TestCase):
 
                 value = critic(device_obs, server_obs, graph=graph)
 
-                self.assertEqual(tuple(value.shape), (2, 1))
+                self.assertEqual(tuple(value.shape), (2, num_agents))
 
 
 if __name__ == "__main__":

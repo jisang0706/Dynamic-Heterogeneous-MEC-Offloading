@@ -121,10 +121,11 @@ class MultiAgentRoleConditionedActor(nn.Module):
         self.obs_dim = obs_dim
         self.role_dim = role_dim
         self.action_dim = action_dim
+        self.shared_obs_dim = obs_dim + num_agents if actor_type == "shared" else obs_dim
 
         if actor_type == "shared":
             self.shared_actor = RoleConditionedActor(
-                obs_dim=obs_dim,
+                obs_dim=self.shared_obs_dim,
                 role_dim=role_dim,
                 action_dim=action_dim,
                 hidden_dim=hidden_dim,
@@ -152,10 +153,23 @@ class MultiAgentRoleConditionedActor(nn.Module):
                 ]
             )
 
+    def _append_agent_identity(self, obs: torch.Tensor) -> torch.Tensor:
+        if self.actor_type != "shared":
+            return obs
+        if obs.dim() == 2:
+            agent_ids = torch.eye(self.num_agents, dtype=obs.dtype, device=obs.device)
+            return torch.cat([obs, agent_ids], dim=-1)
+        if obs.dim() == 3:
+            batch_size = obs.shape[0]
+            agent_ids = torch.eye(self.num_agents, dtype=obs.dtype, device=obs.device)
+            agent_ids = agent_ids.unsqueeze(0).expand(batch_size, -1, -1)
+            return torch.cat([obs, agent_ids], dim=-1)
+        raise ValueError(f"Unsupported observation rank for shared actor: {obs.dim()}")
+
     def forward(self, obs: torch.Tensor, role_mu: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         if self.actor_type == "shared":
             assert self.shared_actor is not None
-            return self.shared_actor(obs, role_mu)
+            return self.shared_actor(self._append_agent_identity(obs), role_mu)
 
         squeeze_batch = False
         if obs.dim() == 2:

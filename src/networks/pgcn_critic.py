@@ -68,7 +68,7 @@ class PGCNCritic(nn.Module):
             self.conv2 = DenseGraphConv(hidden_dim)
             self.conv3 = DenseGraphConv(hidden_dim)
 
-        self.fc1 = orthogonal_init(nn.Linear(hidden_dim * 2, head_hidden_dim), gain=nn.init.calculate_gain("relu"))
+        self.fc1 = orthogonal_init(nn.Linear(hidden_dim * 3, head_hidden_dim), gain=nn.init.calculate_gain("relu"))
         self.fc2 = orthogonal_init(nn.Linear(head_hidden_dim, 1), gain=1.0)
 
     def forward(
@@ -128,9 +128,13 @@ class PGCNCritic(nn.Module):
 
     def _head(self, hidden: torch.Tensor) -> torch.Tensor:
         server_hidden = hidden[:, -1]
-        device_hidden_mean = hidden[:, :-1].mean(dim=1)
-        graph_hidden = torch.cat([server_hidden, device_hidden_mean], dim=-1)
-        return self.fc2(torch.relu(self.fc1(graph_hidden)))
+        device_hidden = hidden[:, :-1]
+        device_hidden_mean = device_hidden.mean(dim=1)
+        num_agents = device_hidden.shape[1]
+        shared_server = server_hidden.unsqueeze(1).expand(-1, num_agents, -1)
+        shared_device_mean = device_hidden_mean.unsqueeze(1).expand(-1, num_agents, -1)
+        critic_input = torch.cat([device_hidden, shared_device_mean, shared_server], dim=-1)
+        return self.fc2(torch.relu(self.fc1(critic_input))).squeeze(-1)
 
     @staticmethod
     def _extract_topology(

@@ -16,7 +16,8 @@ class MLPCritic(nn.Module):
 
         self.fc1 = orthogonal_init(nn.Linear(self.input_dim, hidden_dim), gain=nn.init.calculate_gain("tanh"))
         self.fc2 = orthogonal_init(nn.Linear(hidden_dim, hidden_dim), gain=nn.init.calculate_gain("tanh"))
-        self.fc3 = orthogonal_init(nn.Linear(hidden_dim, 1), gain=1.0)
+        self.value_fc1 = orthogonal_init(nn.Linear(hidden_dim + obs_dim, hidden_dim), gain=nn.init.calculate_gain("tanh"))
+        self.value_fc2 = orthogonal_init(nn.Linear(hidden_dim, 1), gain=1.0)
         self.activation = nn.Tanh()
 
     def build_input(self, device_obs: torch.Tensor, server_obs: torch.Tensor) -> torch.Tensor:
@@ -37,13 +38,13 @@ class MLPCritic(nn.Module):
 
     def forward(self, device_obs: torch.Tensor, server_obs: torch.Tensor | None = None) -> torch.Tensor:
         if server_obs is None:
-            inputs = device_obs
-            if inputs.dim() == 1:
-                inputs = inputs.unsqueeze(0)
-            if inputs.shape[-1] != self.input_dim:
-                raise ValueError(f"flattened critic input must have last dimension {self.input_dim}, got {inputs.shape[-1]}")
-        else:
-            inputs = self.build_input(device_obs=device_obs, server_obs=server_obs)
+            raise ValueError("server_obs must be provided for structured per-agent value prediction.")
+        inputs = self.build_input(device_obs=device_obs, server_obs=server_obs)
         hidden = self.activation(self.fc1(inputs))
         hidden = self.activation(self.fc2(hidden))
-        return self.fc3(hidden)
+        if device_obs.dim() == 2:
+            device_obs = device_obs.unsqueeze(0)
+        shared_context = hidden.unsqueeze(1).expand(-1, self.num_agents, -1)
+        per_agent_input = torch.cat([shared_context, device_obs], dim=-1)
+        value_hidden = self.activation(self.value_fc1(per_agent_input))
+        return self.value_fc2(value_hidden).squeeze(-1)

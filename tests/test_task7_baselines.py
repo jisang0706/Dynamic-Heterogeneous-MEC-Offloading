@@ -37,6 +37,7 @@ class Task7BaselineTests(unittest.TestCase):
         self.assertEqual(a4_config.environment.graph_type, "star_proximity")
         self.assertTrue(a4_config.model.use_role)
         self.assertTrue(a4_config.model.use_l_i)
+        self.assertEqual(a4_config.model.actor_type, "individual")
 
     def test_fixed_policy_baseline_returns_summary(self) -> None:
         config = ExperimentConfig(

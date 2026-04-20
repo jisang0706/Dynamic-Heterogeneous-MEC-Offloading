@@ -65,7 +65,23 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         self.assertEqual(tuple(individual_mean.shape), (4, 5, 4))
         self.assertEqual(tuple(individual_std.shape), (4, 5, 4))
 
-    def test_rollout_buffer_computes_joint_returns_from_stored_transitions(self) -> None:
+    def test_shared_actor_can_differentiate_agents_with_identity_conditioning(self) -> None:
+        actor = MultiAgentRoleConditionedActor(
+            num_agents=5,
+            actor_type="shared",
+            obs_dim=16,
+            role_dim=3,
+            action_dim=4,
+            hidden_dim=64,
+            use_role=False,
+        )
+        obs = torch.zeros(5, 16)
+
+        mean, _ = actor(obs)
+
+        self.assertFalse(torch.allclose(mean[0], mean[1]))
+
+    def test_rollout_buffer_computes_agentwise_returns_from_stored_transitions(self) -> None:
         buffer = RolloutBuffer()
         for reward_value, done in ((1.0, False), (2.0, True)):
             reward = np.full(2, reward_value, dtype=np.float32)
@@ -90,8 +106,8 @@ class Task6TrainingPipelineTests(unittest.TestCase):
             normalize_advantages=False,
         )
 
-        expected_joint_returns = torch.tensor([6.0, 4.0], dtype=torch.float32)
-        self.assertTrue(torch.allclose(gae_batch["return"], expected_joint_returns))
+        expected_returns = torch.tensor([[3.0, 3.0], [2.0, 2.0]], dtype=torch.float32)
+        self.assertTrue(torch.allclose(gae_batch["return"], expected_returns))
 
     def test_observation_and_reward_scalers_produce_finite_outputs(self) -> None:
         obs_scaler = ObservationScaler(shape=(3,))
@@ -117,7 +133,7 @@ class Task6TrainingPipelineTests(unittest.TestCase):
 
         self.assertEqual(len(buffer), 3)
         self.assertEqual(len(episode_rewards), 2)
-        self.assertTrue(np.isfinite(last_value))
+        self.assertTrue(np.isfinite(last_value.detach().cpu().numpy()).all())
 
     def test_tiny_ppo_update_produces_finite_losses(self) -> None:
         config = ExperimentConfig(

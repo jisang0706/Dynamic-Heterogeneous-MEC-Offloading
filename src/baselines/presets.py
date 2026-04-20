@@ -82,33 +82,33 @@ def apply_experiment_variant(config: ExperimentConfig, variant_id: str | None) -
     elif variant.variant_id == "B8":
         model = replace(model, use_role=False, use_l_i=False)
     elif variant.variant_id == "A1":
-        model = replace(model, critic_type="pgcn", actor_type="shared", use_role=True, use_l_i=True, use_l_d_simple=False)
+        model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=True, use_l_d_simple=False)
         environment = replace(environment, graph_type="star", use_mobility=True, use_cpu_dynamics=True)
     elif variant.variant_id == "A2":
-        model = replace(model, critic_type="pgcn", actor_type="shared", use_role=True, use_l_i=False, use_l_d_simple=False)
+        model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=False, use_l_d_simple=False)
     elif variant.variant_id == "A3":
-        model = replace(model, critic_type="pgcn", actor_type="shared", use_role=True, use_l_i=True, use_l_d_simple=False)
+        model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=True, use_l_d_simple=False)
         environment = replace(environment, use_mobility=False, use_cpu_dynamics=False, graph_type="star")
     elif variant.variant_id == "A4":
-        model = replace(model, critic_type="pgcn", actor_type="shared", use_role=True, use_l_i=True, use_l_d_simple=False)
+        model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=True, use_l_d_simple=False)
         environment = replace(environment, graph_type="star_proximity")
     elif variant.variant_id == "A5_ROLE2":
-        model = replace(model, critic_type="pgcn", actor_type="shared", use_role=True, use_l_i=True, role_dim=2, use_l_d_simple=False)
+        model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=True, role_dim=2, use_l_d_simple=False)
     elif variant.variant_id == "A5_ROLE5":
-        model = replace(model, critic_type="pgcn", actor_type="shared", use_role=True, use_l_i=True, role_dim=5, use_l_d_simple=False)
+        model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=True, role_dim=5, use_l_d_simple=False)
     elif variant.variant_id == "A6A":
-        model = replace(model, critic_type="pgcn", actor_type="shared", use_role=True, use_l_i=True, use_l_d_simple=False)
+        model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=True, use_l_d_simple=False)
         environment = replace(environment, use_mobility=True, use_cpu_dynamics=False)
     elif variant.variant_id == "A6B":
-        model = replace(model, critic_type="pgcn", actor_type="shared", use_role=True, use_l_i=True, use_l_d_simple=False)
+        model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=True, use_l_d_simple=False)
         environment = replace(environment, use_mobility=False, use_cpu_dynamics=True)
     elif variant.variant_id == "A7_100":
-        model = replace(model, critic_type="pgcn", actor_type="shared", use_role=True, use_l_i=True, use_l_d_simple=False)
+        model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=True, use_l_d_simple=False)
         environment = replace(environment, graph_type="star_proximity", distance_threshold_m=100.0)
     elif variant.variant_id == "A7_200":
-        model = replace(model, critic_type="pgcn", actor_type="shared", use_role=True, use_l_i=True, use_l_d_simple=False)
+        model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=True, use_l_d_simple=False)
         environment = replace(environment, graph_type="star_proximity", distance_threshold_m=200.0)
     elif variant.variant_id == "A8":
-        model = replace(model, critic_type="pgcn", actor_type="shared", use_role=True, use_l_i=True, use_l_d_simple=True)
+        model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=True, use_l_d_simple=True)
 
     return replace(config, environment=environment, model=model, training=training), variant

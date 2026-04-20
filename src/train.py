@@ -6,6 +6,8 @@ from itertools import chain
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from src.config import ExperimentConfig, build_config_from_args
 
 
@@ -199,7 +201,11 @@ class PPOTrainer:
         if config.training.use_obs_scaling:
             self.device_obs_scaler = ObservationScaler(shape=(config.environment.observation_dim,))
             self.server_obs_scaler = ObservationScaler(shape=(config.environment.central_observation_dim,))
-        self.reward_scaler = RewardScaler(gamma=config.training.gamma) if config.training.use_reward_scaling else None
+        self.reward_scalers = (
+            [RewardScaler(gamma=config.training.gamma) for _ in range(config.environment.num_agents)]
+            if config.training.use_reward_scaling
+            else None
+        )
         self.episode_history: list[dict[str, Any]] = []
         self.update_history: list[dict[str, Any]] = []
         self.last_rollout_episode_lengths: list[int] = []
@@ -320,8 +326,12 @@ class PPOTrainer:
             self.device_obs_scaler.load_state_dict(checkpoint["device_obs_scaler"])
         if checkpoint.get("server_obs_scaler") is not None and self.server_obs_scaler is not None:
             self.server_obs_scaler.load_state_dict(checkpoint["server_obs_scaler"])
-        if checkpoint.get("reward_scaler") is not None and self.reward_scaler is not None:
-            self.reward_scaler.load_state_dict(checkpoint["reward_scaler"])
+        reward_scaler_states = checkpoint.get("reward_scalers")
+        if reward_scaler_states is None and checkpoint.get("reward_scaler") is not None:
+            reward_scaler_states = [checkpoint["reward_scaler"] for _ in range(self.config.environment.num_agents)]
+        if reward_scaler_states is not None and self.reward_scalers is not None:
+            for scaler, state in zip(self.reward_scalers, reward_scaler_states, strict=True):
+                scaler.load_state_dict(state)
 
         self.episode_history = [dict(record) for record in checkpoint.get("episode_history", [])]
         self.update_history = [dict(record) for record in checkpoint.get("update_history", [])]
@@ -402,7 +412,7 @@ class PPOTrainer:
             "trajectory_encoder": None if self.trajectory_encoder is None else self.trajectory_encoder.state_dict(),
             "device_obs_scaler": None if self.device_obs_scaler is None else self.device_obs_scaler.state_dict(),
             "server_obs_scaler": None if self.server_obs_scaler is None else self.server_obs_scaler.state_dict(),
-            "reward_scaler": None if self.reward_scaler is None else self.reward_scaler.state_dict(),
+            "reward_scalers": None if self.reward_scalers is None else [scaler.state_dict() for scaler in self.reward_scalers],
             "episode_history": self.episode_history,
             "update_history": self.update_history,
         }
@@ -414,7 +424,7 @@ class PPOTrainer:
         if self.config.model.critic_type == "pgcn":
             if device_obs.dim() == 2:
                 graph = self.graph_builder.build(positions=positions)
-                return self.critic(device_obs, server_obs, graph=graph).squeeze(-1)
+                return self.critic(device_obs, server_obs, graph=graph).squeeze(0)
 
             graphs = [
                 self.graph_builder.build(positions=positions[step_idx])
@@ -422,12 +432,13 @@ class PPOTrainer:
             ]
             if self.critic.use_pyg:
                 batch_graph = self.components["to_pyg_batch"](graphs).to(self.device)
-                return self.critic(device_obs, server_obs, graph=batch_graph).squeeze(-1)
+                return self.critic(device_obs, server_obs, graph=batch_graph)
 
             stacked_adjacency = self.torch.stack([graph.adjacency for graph in graphs], dim=0)
-            return self.critic(device_obs, server_obs, adjacency=stacked_adjacency).squeeze(-1)
+            return self.critic(device_obs, server_obs, adjacency=stacked_adjacency)
 
-        return self.critic(device_obs, server_obs).squeeze(-1)
+        values = self.critic(device_obs, server_obs)
+        return values.squeeze(0) if device_obs.dim() == 2 else values
 
     def _compute_l_i_loss(self, trajectory_batch: dict[str, Any], step_indices: Any | None = None) -> Any | None:
         if self.role_encoder is None or self.trajectory_encoder is None:
@@ -478,13 +489,13 @@ class PPOTrainer:
         self,
         num_episodes: int,
         max_steps: int | None = None,
-    ) -> tuple[Any, float, list[float]]:
+    ) -> tuple[Any, Any, list[float]]:
         RolloutBuffer = self.components["RolloutBuffer"]
         Transition = self.components["Transition"]
         buffer = RolloutBuffer()
         episode_joint_rewards: list[float] = []
         episode_lengths: list[int] = []
-        last_value = 0.0
+        last_value = self.torch.zeros(self.config.environment.num_agents, dtype=self.torch.float32, device=self.device)
         steps_remaining = max_steps
         budget_truncated = False
 
@@ -495,8 +506,9 @@ class PPOTrainer:
             episode_joint_reward = 0.0
             episode_length = 0
             done = False
-            if self.reward_scaler is not None:
-                self.reward_scaler.reset()
+            if self.reward_scalers is not None:
+                for scaler in self.reward_scalers:
+                    scaler.reset()
             step_limit = self.config.environment.episode_length
             if steps_remaining is not None:
                 step_limit = min(step_limit, steps_remaining)
@@ -512,13 +524,26 @@ class PPOTrainer:
                         actor_obs,
                         role_mu if self.config.model.use_role else None,
                     )
-                    value = float(self._critic_values(core_obs, server_info, positions).item())
+                    value = self._critic_values(core_obs, server_info, positions)
 
                 next_observation, reward, done, info = self.env.step(env_action.cpu().numpy())
                 joint_reward = float(reward.sum())
-                scaled_joint_reward = joint_reward
-                if self.reward_scaler is not None:
-                    scaled_joint_reward = self.reward_scaler.scale(joint_reward)
+                cooperative_reward = joint_reward / float(self.config.environment.num_agents)
+                effective_reward = (
+                    self.config.training.local_reward_weight * reward
+                    + (1.0 - self.config.training.local_reward_weight) * cooperative_reward
+                ).astype(np.float32)
+                if self.reward_scalers is None:
+                    scaled_reward = effective_reward
+                else:
+                    scaled_reward = np.asarray(
+                        [
+                            self.reward_scalers[agent_idx].scale(float(effective_reward[agent_idx]))
+                            for agent_idx in range(self.config.environment.num_agents)
+                        ],
+                        dtype=np.float32,
+                    )
+                scaled_joint_reward = float(scaled_reward.sum())
                 timeout_ratio = float(info.get("timeout_ratio", 1.0))
                 episode_joint_reward += joint_reward
                 episode_length += 1
@@ -532,9 +557,10 @@ class PPOTrainer:
                         action=action.cpu().numpy(),
                         log_prob=log_prob.cpu().numpy(),
                         reward=reward.copy(),
+                        scaled_reward=scaled_reward,
                         joint_reward=joint_reward,
                         scaled_joint_reward=scaled_joint_reward,
-                        value=value,
+                        value=value.cpu().numpy(),
                         done=done,
                         timeout_ratio=timeout_ratio,
                     )
@@ -552,9 +578,9 @@ class PPOTrainer:
                 _, core_obs, server_info = self._prepare_model_observation(observation, update_stats=False)
                 positions = self.torch.from_numpy(self.env.positions.copy()).float().to(self.device)
                 with self.torch.no_grad():
-                    last_value = float(self._critic_values(core_obs, server_info, positions).item())
+                    last_value = self._critic_values(core_obs, server_info, positions)
             else:
-                last_value = 0.0
+                last_value = self.torch.zeros(self.config.environment.num_agents, dtype=self.torch.float32, device=self.device)
 
             episode_joint_rewards.append(episode_joint_reward)
             episode_lengths.append(episode_length)
@@ -617,13 +643,12 @@ class PPOTrainer:
                     role_mu if self.config.model.use_role else None,
                 )
                 ratio = self.torch.exp(log_prob - old_log_prob)
-                expanded_advantage = advantage.unsqueeze(-1).expand_as(ratio)
-                unclipped = ratio * expanded_advantage
+                unclipped = ratio * advantage
                 clipped = self.torch.clamp(
                     ratio,
                     1.0 - self.config.training.ppo_clip,
                     1.0 + self.config.training.ppo_clip,
-                ) * expanded_advantage
+                ) * advantage
                 policy_loss = -self.torch.minimum(unclipped, clipped).mean()
                 entropy_bonus = entropy.mean()
 
@@ -725,7 +750,11 @@ class PPOTrainer:
 
     def run_smoke_rollout(self) -> SmokeRunSummary:
         buffer, _, _ = self.collect_rollouts(num_episodes=1, max_steps=self.config.training.smoke_steps)
-        last_transition_value = 0.0 if len(buffer) == 0 else float(buffer.transitions[-1].value or 0.0)
+        last_transition_value = (
+            0.0
+            if len(buffer) == 0
+            else float(np.asarray(buffer.transitions[-1].value, dtype=np.float32).mean())
+        )
         last_l_i_loss = None
         last_l_var_loss = None
         if self.config.model.use_role and self.config.model.use_l_i and len(buffer) > 0:
