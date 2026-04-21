@@ -135,6 +135,46 @@ class Task1EnvironmentTests(unittest.TestCase):
         self.assertLess(edge_only_delays[1], edge_only_delays[2])
         self.assertLess(edge_only_delays[2], edge_only_delays[0])
 
+    def test_clipped_lateness_penalty_makes_severe_timeouts_worse(self) -> None:
+        config = EnvironmentConfig(
+            num_agents=1,
+            episode_length=1,
+            use_mobility=False,
+            use_cpu_dynamics=False,
+            reward_timeout_penalty=3000.0,
+            reward_lateness_penalty=400.0,
+            reward_lateness_clip=2.0,
+        )
+        local_only_action = np.zeros((1, config.num_tasks_per_step + 1), dtype=np.float32)
+
+        def run_with_backlog(seed: int, backlog: float) -> tuple[float, np.ndarray]:
+            env = DynamicMECEnv(config, seed=seed)
+            env.reset()
+            env.local_queues[:] = np.asarray([backlog], dtype=np.float32)
+            env.edge_queue = 0.0
+            env.prev_edge_queue = 0.0
+            env.cpu_freqs_ghz[:] = np.asarray([1.0], dtype=np.float32)
+            env.max_tx_powers_mw[:] = np.asarray([300.0], dtype=np.float32)
+            env.channel_gains[:] = np.asarray([1.0], dtype=np.float32)
+            env.task_matrix = np.asarray(
+                [
+                    [
+                        [1.0, 1.0, 0.5],
+                        [1.0, 1.0, 0.5],
+                        [1.0, 1.0, 0.5],
+                    ]
+                ],
+                dtype=np.float32,
+            )
+            _, reward, _, _ = env.step(local_only_action)
+            return float(reward[0]), env.last_reward_breakdown["task_lateness_clipped"][0]
+
+        mild_reward, mild_lateness = run_with_backlog(seed=31, backlog=0.0)
+        severe_reward, severe_lateness = run_with_backlog(seed=32, backlog=3.0)
+
+        self.assertGreater(float(severe_lateness.sum()), float(mild_lateness.sum()))
+        self.assertLess(severe_reward, mild_reward)
+
 
 if __name__ == "__main__":
     unittest.main()

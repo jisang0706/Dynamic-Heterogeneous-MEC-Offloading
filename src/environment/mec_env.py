@@ -268,6 +268,7 @@ class DynamicMECEnv:
 
         task_completion_delay_s = np.zeros_like(task_work, dtype=np.float32)
         task_normalized_cost = np.zeros_like(task_work, dtype=np.float32)
+        task_lateness_clipped = np.zeros_like(task_work, dtype=np.float32)
         timeout_mask = np.zeros_like(task_work, dtype=bool)
         transmission_finish_s = np.zeros_like(task_work, dtype=np.float32)
         local_completion_s = np.zeros_like(task_work, dtype=np.float32)
@@ -317,6 +318,8 @@ class DynamicMECEnv:
 
                 deadline = max(float(self.task_deadlines_s[device_idx, task_idx]), 1e-6)
                 delay_norm = completion_delay / deadline
+                lateness = max(0.0, delay_norm - 1.0)
+                clipped_lateness = min(lateness, self.config.reward_lateness_clip)
                 energy_norm = self._normalize_energy(
                     local_energy_j=float(local_energy_j[device_idx, task_idx]),
                     tx_energy_j=float(tx_energy_j[device_idx, task_idx]),
@@ -328,13 +331,15 @@ class DynamicMECEnv:
 
                 task_completion_delay_s[device_idx, task_idx] = completion_delay
                 task_normalized_cost[device_idx, task_idx] = normalized_cost
+                task_lateness_clipped[device_idx, task_idx] = clipped_lateness
                 timeout_mask[device_idx, task_idx] = completion_delay > deadline
 
         device_rewards = np.zeros(self.config.num_agents, dtype=np.float32)
         for device_idx in range(self.config.num_agents):
             timeout_penalties = timeout_mask[device_idx].sum() * self.config.reward_timeout_penalty
+            lateness_penalties = task_lateness_clipped[device_idx].sum() * self.config.reward_lateness_penalty
             non_timeout_cost = task_normalized_cost[device_idx][~timeout_mask[device_idx]].sum() * self.config.reward_scale
-            device_rewards[device_idx] = -float(timeout_penalties + non_timeout_cost)
+            device_rewards[device_idx] = -float(timeout_penalties + lateness_penalties + non_timeout_cost)
 
         next_local_queues = np.maximum(
             0.0,
@@ -346,6 +351,7 @@ class DynamicMECEnv:
             "next_edge_queue": next_edge_queue,
             "task_completion_delay_s": task_completion_delay_s.astype(np.float32),
             "task_normalized_cost": task_normalized_cost.astype(np.float32),
+            "task_lateness_clipped": task_lateness_clipped.astype(np.float32),
             "timeout_mask": timeout_mask,
         }
 
