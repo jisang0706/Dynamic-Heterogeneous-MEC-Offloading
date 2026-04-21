@@ -81,6 +81,25 @@ class Task6TrainingPipelineTests(unittest.TestCase):
 
         self.assertFalse(torch.allclose(mean[0], mean[1]))
 
+    def test_individual_actor_can_use_global_context_summary(self) -> None:
+        actor = MultiAgentRoleConditionedActor(
+            num_agents=3,
+            actor_type="individual",
+            obs_dim=16,
+            role_dim=3,
+            action_dim=4,
+            hidden_dim=64,
+            use_role=False,
+        )
+        baseline_obs = torch.zeros(3, 16)
+        shifted_obs = torch.zeros(3, 16)
+        shifted_obs[1, 0] = 1.0
+
+        baseline_mean, _ = actor(baseline_obs)
+        shifted_mean, _ = actor(shifted_obs)
+
+        self.assertFalse(torch.allclose(baseline_mean[0], shifted_mean[0]))
+
     def test_rollout_buffer_computes_agentwise_returns_from_stored_transitions(self) -> None:
         buffer = RolloutBuffer()
         for reward_value, done in ((1.0, False), (2.0, True)):
@@ -182,6 +201,7 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         self.assertTrue(np.isfinite(update.critic_loss))
         self.assertTrue(np.isfinite(update.entropy))
         self.assertTrue(update.l_i_loss is None or np.isfinite(update.l_i_loss))
+        self.assertTrue(update.effective_l_i_coeff is None or np.isfinite(update.effective_l_i_coeff))
         self.assertTrue(update.l_var_loss is None or np.isfinite(update.l_var_loss))
         if update.role_mu_var_per_dim is not None:
             self.assertEqual(len(update.role_mu_var_per_dim), 3)

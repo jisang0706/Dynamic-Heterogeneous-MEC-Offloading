@@ -12,9 +12,36 @@ from src.visualize import generate_plots
 class Task8EvaluationVisualizationTests(unittest.TestCase):
     def test_operational_mode_summary_groups_device_records(self) -> None:
         records = [
-            {"distance_m": 90.0, "cpu_ghz": 2.7, "offloading_ratio": 0.8, "power_ratio": 0.7, "timeout_ratio": 0.1},
-            {"distance_m": 92.0, "cpu_ghz": 2.6, "offloading_ratio": 0.6, "power_ratio": 0.5, "timeout_ratio": 0.2},
-            {"distance_m": 180.0, "cpu_ghz": 1.8, "offloading_ratio": 0.3, "power_ratio": 0.4, "timeout_ratio": 0.5},
+            {
+                "distance_m": 90.0,
+                "cpu_ghz": 2.7,
+                "offloading_ratio": 0.8,
+                "power_ratio": 0.7,
+                "timeout_ratio": 0.1,
+                "deadline_s": 0.9,
+                "best_case_delay_s": 0.5,
+                "deadline_to_bestcase_ratio": 1.8,
+            },
+            {
+                "distance_m": 92.0,
+                "cpu_ghz": 2.6,
+                "offloading_ratio": 0.6,
+                "power_ratio": 0.5,
+                "timeout_ratio": 0.2,
+                "deadline_s": 0.8,
+                "best_case_delay_s": 0.4,
+                "deadline_to_bestcase_ratio": 2.0,
+            },
+            {
+                "distance_m": 180.0,
+                "cpu_ghz": 1.8,
+                "offloading_ratio": 0.3,
+                "power_ratio": 0.4,
+                "timeout_ratio": 0.5,
+                "deadline_s": 1.1,
+                "best_case_delay_s": 0.7,
+                "deadline_to_bestcase_ratio": 1.57,
+            },
         ]
 
         summary = build_operational_mode_summary(records)
@@ -23,6 +50,7 @@ class Task8EvaluationVisualizationTests(unittest.TestCase):
         near_high = next(item for item in summary if item["distance_regime"] == "near" and item["cpu_regime"] == "high")
         self.assertEqual(near_high["count"], 2)
         self.assertAlmostEqual(near_high["avg_offloading_ratio"], 0.7)
+        self.assertAlmostEqual(near_high["avg_deadline_to_bestcase_ratio"], 1.9)
         far_low = next(item for item in summary if item["distance_regime"] == "far" and item["cpu_regime"] == "low")
         self.assertEqual(far_low["count"], 1)
         self.assertAlmostEqual(far_low["avg_timeout_ratio"], 0.5)
@@ -55,6 +83,9 @@ class Task8EvaluationVisualizationTests(unittest.TestCase):
                         "avg_offloading_ratio": 0.5,
                         "avg_power_ratio": 0.6,
                         "avg_timeout_ratio": 0.2,
+                        "avg_deadline_s": 0.8,
+                        "avg_best_case_delay_s": 0.5,
+                        "avg_deadline_to_bestcase_ratio": 1.6,
                     }
                     for distance_regime in ("near", "mid", "far")
                     for cpu_regime in ("low", "mid", "high")

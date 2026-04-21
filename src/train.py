@@ -31,6 +31,7 @@ class TrainingUpdateSummary:
     critic_loss: float
     entropy: float
     l_i_loss: float | None = None
+    effective_l_i_coeff: float | None = None
     l_var_loss: float | None = None
     role_mu_var_per_dim: list[float] | None = None
     role_sigma_mean_per_dim: list[float] | None = None
@@ -138,6 +139,8 @@ class PPOTrainer:
         self.device = self.torch.device("cuda" if self.torch.cuda.is_available() else "cpu")
         self.components["set_seed"](config.seed)
         self.config.ensure_output_dirs()
+        if enable_resume and config.training.run_mode == "train" and config.training.resume_from is not None:
+            self._maybe_disable_global_context_for_legacy_resume()
 
         DynamicMECEnv = self.components["DynamicMECEnv"]
         GraphBuilder = self.components["GraphBuilder"]
@@ -177,6 +180,7 @@ class PPOTrainer:
             action_dim=config.model.action_dim,
             hidden_dim=config.model.actor_hidden_dim,
             use_role=config.model.use_role,
+            global_context_dim=config.model.actor_global_context_dim,
             initial_action_std_env=config.model.initial_action_std_env,
             initial_offloading_mean_env=config.model.initial_offloading_mean_env,
             initial_power_mean_env=config.model.initial_power_mean_env,
@@ -306,6 +310,27 @@ class PPOTrainer:
             return None
         return self.update_history[-1]
 
+    def _maybe_disable_global_context_for_legacy_resume(self) -> None:
+        resume_from = self.config.training.resume_from
+        if resume_from is None:
+            return
+        checkpoint_path = Path(resume_from)
+        if not checkpoint_path.exists():
+            return
+        checkpoint = self._torch_load_checkpoint(checkpoint_path)
+        checkpoint_model = dict(checkpoint.get("config", {}).get("model", {}))
+        if "actor_global_context_dim" not in checkpoint_model:
+            self.config.model.actor_global_context_dim = 0
+
+    def _effective_l_i_coeff(self) -> float:
+        if not self.config.model.use_role or not self.config.model.use_l_i:
+            return 0.0
+        warmup_updates = max(int(self.config.training.l_i_warmup_updates), 0)
+        if warmup_updates <= 0:
+            return float(self.config.training.l_i_coeff)
+        progress = min(1.0, float(self.updates_completed + 1) / float(warmup_updates))
+        return float(self.config.training.l_i_coeff) * progress
+
     def _load_training_checkpoint(self, checkpoint_path: Path) -> None:
         checkpoint = self._torch_load_checkpoint(checkpoint_path)
         self.actor.load_state_dict(checkpoint["actor"])
@@ -377,6 +402,7 @@ class PPOTrainer:
             "critic_loss": summary.critic_loss,
             "entropy": summary.entropy,
             "l_i_loss": summary.l_i_loss,
+            "effective_l_i_coeff": summary.effective_l_i_coeff,
             "l_var_loss": summary.l_var_loss,
             "role_mu_var_per_dim": summary.role_mu_var_per_dim,
             "role_sigma_mean_per_dim": summary.role_sigma_mean_per_dim,
@@ -622,6 +648,7 @@ class PPOTrainer:
         role_mu_var_history: list[Any] = []
         role_sigma_mean_history: list[Any] = []
         near_zero_sigma_history: list[float] = []
+        effective_l_i_coeff = self._effective_l_i_coeff()
 
         for _ in range(self.config.training.ppo_epochs):
             permutation = self.torch.randperm(num_steps, device=self.device)
@@ -675,7 +702,7 @@ class PPOTrainer:
                 actor_loss = (
                     policy_loss
                     - self.config.training.entropy_coeff * entropy_bonus
-                    + self.config.training.l_i_coeff * l_i_loss
+                    + effective_l_i_coeff * l_i_loss
                     + self.config.training.lambda_var * l_var_loss
                     + self.config.training.l_d_coeff * l_d_loss
                 )
@@ -727,6 +754,7 @@ class PPOTrainer:
             critic_loss=sum(critic_losses) / max(len(critic_losses), 1),
             entropy=sum(entropies) / max(len(entropies), 1),
             l_i_loss=(sum(l_i_losses) / len(l_i_losses)) if l_i_losses else None,
+            effective_l_i_coeff=effective_l_i_coeff if self.config.model.use_l_i else None,
             l_var_loss=(sum(l_var_losses) / len(l_var_losses)) if l_var_losses else None,
             role_mu_var_per_dim=(
                 self.torch.stack(role_mu_var_history, dim=0).mean(dim=0).tolist() if role_mu_var_history else None

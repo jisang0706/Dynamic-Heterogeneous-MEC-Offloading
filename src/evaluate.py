@@ -59,7 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--distance-threshold-m", type=float, default=150.0)
     parser.add_argument("--use-mobility", type=_str_to_bool, default=True)
     parser.add_argument("--use-cpu-dynamics", type=_str_to_bool, default=True)
-    parser.add_argument("--u-slack", type=float, default=1.5)
+    parser.add_argument("--delay-mode", choices=("li_original", "bestcase_slack"), default="bestcase_slack")
+    parser.add_argument("--u-slack", type=float, default=1.8)
+    parser.add_argument("--reward-timeout-penalty", type=float, default=3000.0)
     parser.add_argument("--total-bandwidth-hz", type=float, default=10e6)
     parser.add_argument("--server-cpu-ghz", type=float, default=25.0)
     parser.add_argument("--resource-scaling-mode", choices=("fixed", "linear_after_threshold"), default="fixed")
@@ -170,6 +172,9 @@ def build_operational_mode_summary(device_records: list[dict[str, float]]) -> li
                 "avg_offloading_ratio": _mean_or_none([item["offloading_ratio"] for item in records]),
                 "avg_power_ratio": _mean_or_none([item["power_ratio"] for item in records]),
                 "avg_timeout_ratio": _mean_or_none([item["timeout_ratio"] for item in records]),
+                "avg_deadline_s": _mean_or_none([item["deadline_s"] for item in records]),
+                "avg_best_case_delay_s": _mean_or_none([item["best_case_delay_s"] for item in records]),
+                "avg_deadline_to_bestcase_ratio": _mean_or_none([item["deadline_to_bestcase_ratio"] for item in records]),
             }
         )
     return summary
@@ -197,6 +202,11 @@ def summarize_evaluation(
         "mean_cpu_ghz": float(np.mean([item["mean_cpu_ghz"] for item in step_records])) if step_records else 0.0,
         "mean_offloading_ratio": float(np.mean([item["mean_offloading_ratio"] for item in step_records])) if step_records else 0.0,
         "mean_power_ratio": float(np.mean([item["mean_power_ratio"] for item in step_records])) if step_records else 0.0,
+        "mean_deadline_s": float(np.mean([item["mean_deadline_s"] for item in step_records])) if step_records else 0.0,
+        "mean_best_case_delay_s": float(np.mean([item["mean_best_case_delay_s"] for item in step_records])) if step_records else 0.0,
+        "mean_deadline_to_bestcase_ratio": float(np.mean([item["mean_deadline_to_bestcase_ratio"] for item in step_records]))
+        if step_records
+        else 0.0,
     }
 
     optional_metric_names = (
@@ -245,6 +255,9 @@ def _all_finite_step_metrics(step_records: list[dict[str, Any]]) -> bool:
         "mean_cpu_ghz",
         "mean_offloading_ratio",
         "mean_power_ratio",
+        "mean_deadline_s",
+        "mean_best_case_delay_s",
+        "mean_deadline_to_bestcase_ratio",
     )
     for record in step_records:
         for key in scalar_metric_keys:
@@ -373,7 +386,9 @@ def _build_fixed_policy(args: argparse.Namespace) -> LoadedPolicy:
         distance_threshold_m=args.distance_threshold_m,
         use_mobility=args.use_mobility,
         use_cpu_dynamics=args.use_cpu_dynamics,
+        delay_mode=args.delay_mode,
         u_slack=args.u_slack,
+        reward_timeout_penalty=args.reward_timeout_penalty,
         total_bandwidth_hz=args.total_bandwidth_hz,
         server_cpu_ghz=args.server_cpu_ghz,
         resource_scaling_mode=args.resource_scaling_mode,
@@ -538,6 +553,8 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
             pre_step_distances_m = env.distances_m.copy()
             pre_step_cpu_ghz = env.cpu_freqs_ghz.copy()
             pre_step_local_queues = env.local_queues.copy()
+            pre_step_deadlines_s = env.task_deadlines_s.copy()
+            pre_step_delay_components = env.compute_best_case_delay_components()
             if policy.runner_kind == "fixed":
                 env_action, action_native, log_prob, role_sigma = _select_fixed_action(policy, episode_idx, step_idx)
                 role_mu = np.zeros((policy.config.environment.num_agents, policy.config.model.role_dim), dtype=np.float32)
@@ -576,6 +593,11 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
             timeout_mask = env.last_reward_breakdown["task_timeout_mask"]
             per_agent_timeout = timeout_mask.mean(axis=1).astype(np.float32)
             per_agent_offloading = env_action[:, :-1].mean(axis=1).astype(np.float32)
+            per_agent_deadline_s = pre_step_deadlines_s.mean(axis=1).astype(np.float32)
+            per_agent_best_case_delay_s = pre_step_delay_components["d_best_s"].mean(axis=1).astype(np.float32)
+            per_agent_deadline_to_bestcase_ratio = (
+                pre_step_deadlines_s / np.maximum(pre_step_delay_components["d_best_s"], 1e-8)
+            ).mean(axis=1).astype(np.float32)
 
             if role_sigma is not None:
                 role_std_means.append(float(np.mean(role_sigma)))
@@ -619,10 +641,16 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
                     "mean_cpu_ghz": float(pre_step_cpu_ghz.mean()),
                     "mean_offloading_ratio": float(env_action[:, :-1].mean()),
                     "mean_power_ratio": float(env_action[:, -1].mean()),
+                    "mean_deadline_s": float(per_agent_deadline_s.mean()),
+                    "mean_best_case_delay_s": float(per_agent_best_case_delay_s.mean()),
+                    "mean_deadline_to_bestcase_ratio": float(per_agent_deadline_to_bestcase_ratio.mean()),
                     "device_rewards": reward.astype(np.float32),
                     "device_distances_m": pre_step_distances_m.astype(np.float32),
                     "device_cpu_ghz": pre_step_cpu_ghz.astype(np.float32),
                     "device_local_queues": pre_step_local_queues.astype(np.float32),
+                    "device_deadline_s": per_agent_deadline_s,
+                    "device_best_case_delay_s": per_agent_best_case_delay_s,
+                    "device_deadline_to_bestcase_ratio": per_agent_deadline_to_bestcase_ratio,
                     "device_timeout_ratio": per_agent_timeout,
                     "device_offloading_ratio": per_agent_offloading,
                     "power_ratio": env_action[:, -1].astype(np.float32),
@@ -640,6 +668,9 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
                         "offloading_ratio": float(per_agent_offloading[agent_idx]),
                         "power_ratio": float(env_action[agent_idx, -1]),
                         "timeout_ratio": float(per_agent_timeout[agent_idx]),
+                        "deadline_s": float(per_agent_deadline_s[agent_idx]),
+                        "best_case_delay_s": float(per_agent_best_case_delay_s[agent_idx]),
+                        "deadline_to_bestcase_ratio": float(per_agent_deadline_to_bestcase_ratio[agent_idx]),
                     }
                 )
 

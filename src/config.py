@@ -104,8 +104,8 @@ class EnvironmentConfig:
     task_density_range_gcycles_per_mb: tuple[float, float] = (0.2, 2.0)
     task_deadline_range_s: tuple[float, float] = (0.2, 1.0)
     delay_mode: str = "bestcase_slack"
-    u_slack: float = 1.5
-    reward_timeout_penalty: float = 5000.0
+    u_slack: float = 1.8
+    reward_timeout_penalty: float = 3000.0
     reward_scale: float = 1000.0
     delay_weight: float = 0.5
     energy_weight: float = 0.5
@@ -170,6 +170,7 @@ class ModelConfig:
     role_hidden_dim: int = 12
     trajectory_hidden_dim: int = 64
     action_dim: int = 4
+    actor_global_context_dim: int = 8
     initial_action_std_env: float = 0.15
     initial_offloading_mean_env: float = 0.70
     initial_power_mean_env: float = 0.8
@@ -185,8 +186,9 @@ class TrainingConfig:
     gae_lambda: float = 0.95
     ppo_clip: float = 0.05
     entropy_coeff: float = 0.002
-    local_reward_weight: float = 0.8
-    l_i_coeff: float = 1e-4
+    local_reward_weight: float = 0.6
+    l_i_coeff: float = 5e-5
+    l_i_warmup_updates: int = 100
     l_d_coeff: float = 1e-3
     lambda_var: float = 1e-5
     sigma_floor: float = 0.05
@@ -234,7 +236,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-mobility", type=_str_to_bool, default=True)
     parser.add_argument("--use-cpu-dynamics", type=_str_to_bool, default=True)
     parser.add_argument("--delay-mode", choices=("li_original", "bestcase_slack"), default="bestcase_slack")
-    parser.add_argument("--u-slack", type=float, default=1.5)
+    parser.add_argument("--u-slack", type=float, default=1.8)
+    parser.add_argument("--reward-timeout-penalty", type=float, default=3000.0)
     parser.add_argument("--total-bandwidth-hz", type=float, default=10e6)
     parser.add_argument("--server-cpu-ghz", type=float, default=25.0)
     parser.add_argument("--resource-scaling-mode", choices=("fixed", "linear_after_threshold"), default="fixed")
@@ -248,6 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--actor-type", choices=("shared", "individual"), default="shared")
     parser.add_argument("--role-dim", type=int, default=3)
     parser.add_argument("--actor-hidden-dim", type=int, default=128)
+    parser.add_argument("--actor-global-context-dim", type=int, default=8)
     parser.add_argument("--initial-action-std-env", type=float, default=0.15)
     parser.add_argument("--initial-offloading-mean-env", type=float, default=0.70)
     parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
@@ -260,8 +264,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--ppo-clip", type=float, default=0.05)
     parser.add_argument("--entropy-coeff", type=float, default=0.002)
-    parser.add_argument("--local-reward-weight", type=float, default=0.8)
-    parser.add_argument("--l-i-coeff", type=float, default=1e-4)
+    parser.add_argument("--local-reward-weight", type=float, default=0.6)
+    parser.add_argument("--l-i-coeff", type=float, default=5e-5)
+    parser.add_argument("--l-i-warmup-updates", type=int, default=100)
     parser.add_argument("--l-d-coeff", type=float, default=1e-3)
     parser.add_argument("--lambda-var", type=float, default=1e-5)
     parser.add_argument("--sigma-floor", type=float, default=0.05)
@@ -291,6 +296,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         use_cpu_dynamics=args.use_cpu_dynamics,
         delay_mode=args.delay_mode,
         u_slack=args.u_slack,
+        reward_timeout_penalty=args.reward_timeout_penalty,
         total_bandwidth_hz=args.total_bandwidth_hz,
         server_cpu_ghz=args.server_cpu_ghz,
         resource_scaling_mode=args.resource_scaling_mode,
@@ -305,6 +311,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         actor_type=args.actor_type,
         role_dim=args.role_dim,
         actor_hidden_dim=args.actor_hidden_dim,
+        actor_global_context_dim=args.actor_global_context_dim,
         initial_action_std_env=args.initial_action_std_env,
         initial_offloading_mean_env=args.initial_offloading_mean_env,
         initial_power_mean_env=args.initial_power_mean_env,
@@ -320,6 +327,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         entropy_coeff=args.entropy_coeff,
         local_reward_weight=args.local_reward_weight,
         l_i_coeff=args.l_i_coeff,
+        l_i_warmup_updates=args.l_i_warmup_updates,
         l_d_coeff=args.l_d_coeff,
         lambda_var=args.lambda_var,
         sigma_floor=args.sigma_floor,
@@ -349,6 +357,9 @@ def build_config_from_dict(payload: dict[str, Any]) -> ExperimentConfig:
     environment_payload = dict(payload.get("environment", {}))
     model_payload = dict(payload.get("model", {}))
     training_payload = dict(payload.get("training", {}))
+
+    if "actor_global_context_dim" not in model_payload:
+        model_payload["actor_global_context_dim"] = 0
 
     for key in ("task_size_range_mb", "task_density_range_gcycles_per_mb", "task_deadline_range_s"):
         if key in environment_payload:

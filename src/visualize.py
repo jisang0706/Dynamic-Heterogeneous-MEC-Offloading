@@ -542,6 +542,57 @@ def plot_operational_mode_summary(summary: dict[str, Any], plots_dir: Path) -> P
     return output_path
 
 
+def plot_operational_mode_context_summary(summary: dict[str, Any], plots_dir: Path) -> Path | None:
+    bins = summary.get("operational_mode_bins", [])
+    if not bins:
+        return None
+
+    distance_labels = ["near", "mid", "far"]
+    cpu_labels = ["low", "mid", "high"]
+    metric_specs = (
+        ("count", "Sample Count", False),
+        ("avg_deadline_s", "Mean Deadline (s)", True),
+        ("avg_best_case_delay_s", "Mean Best-Case Delay (s)", True),
+        ("avg_deadline_to_bestcase_ratio", "Mean d_c / d_best", True),
+    )
+
+    fig, axes = plt.subplots(2, 2, figsize=(10.5, 7.4))
+    for axis, (metric_key, title, use_float) in zip(axes.flat, metric_specs):
+        heatmap = np.full((len(cpu_labels), len(distance_labels)), np.nan, dtype=np.float32)
+        for item in bins:
+            row = cpu_labels.index(item["cpu_regime"])
+            col = distance_labels.index(item["distance_regime"])
+            value = item.get(metric_key)
+            if value is None:
+                continue
+            heatmap[row, col] = float(value)
+        image = axis.imshow(heatmap, cmap="viridis", aspect="auto")
+        for row in range(heatmap.shape[0]):
+            for col in range(heatmap.shape[1]):
+                value = heatmap[row, col]
+                if not np.isfinite(value):
+                    label = "n/a"
+                    color = "black"
+                elif use_float:
+                    label = _format_numeric_value(float(value))
+                    color = "white" if image.norm(float(value)) < 0.45 else "black"
+                else:
+                    label = str(int(round(float(value))))
+                    color = "white" if image.norm(float(value)) < 0.45 else "black"
+                axis.text(col, row, label, ha="center", va="center", color=color, fontsize=8)
+        axis.set_xticks(range(len(distance_labels)), distance_labels)
+        axis.set_yticks(range(len(cpu_labels)), cpu_labels)
+        axis.set_title(title)
+        colorbar = fig.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
+        colorbar.set_label("Count [-]" if metric_key == "count" else "Value [-]")
+
+    fig.tight_layout()
+    output_path = plots_dir / "operational_mode_context_heatmaps.png"
+    fig.savefig(output_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
 def plot_identifiability_comparison(summaries: list[dict[str, Any]], plots_dir: Path) -> Path | None:
     aggregated = aggregate_seed_summaries(summaries)
     filtered = [item for item in aggregated if item["metrics"].get("mean_role_kl", {}).get("mean") is not None]
@@ -701,6 +752,9 @@ def generate_plots(
         operational_plot = plot_operational_mode_summary(summaries[0], plots_dir)
         if operational_plot is not None:
             generated.append(operational_plot)
+        operational_context_plot = plot_operational_mode_context_summary(summaries[0], plots_dir)
+        if operational_context_plot is not None:
+            generated.append(operational_context_plot)
 
     if resolved_trace is not None and resolved_trace.exists():
         timeline_plot = plot_role_transition_timeline(_load_jsonl(resolved_trace), plots_dir, agent_index=timeline_agent)

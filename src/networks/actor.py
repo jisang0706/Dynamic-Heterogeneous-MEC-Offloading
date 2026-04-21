@@ -108,6 +108,7 @@ class MultiAgentRoleConditionedActor(nn.Module):
         action_dim: int = 4,
         hidden_dim: int = 128,
         use_role: bool = True,
+        global_context_dim: int = 8,
         initial_action_std_env: float = 0.25,
         initial_offloading_mean_env: float = 0.65,
         initial_power_mean_env: float = 0.8,
@@ -121,7 +122,15 @@ class MultiAgentRoleConditionedActor(nn.Module):
         self.obs_dim = obs_dim
         self.role_dim = role_dim
         self.action_dim = action_dim
-        self.shared_obs_dim = obs_dim + num_agents if actor_type == "shared" else obs_dim
+        self.global_context_dim = max(int(global_context_dim), 0)
+        tanh_gain = nn.init.calculate_gain("tanh")
+        if self.global_context_dim > 0:
+            self.context_encoder = orthogonal_init(nn.Linear(obs_dim, self.global_context_dim), gain=tanh_gain)
+            self.context_tanh = nn.Tanh()
+        else:
+            self.context_encoder = None
+            self.context_tanh = None
+        self.shared_obs_dim = obs_dim + self.global_context_dim + (num_agents if actor_type == "shared" else 0)
 
         if actor_type == "shared":
             self.shared_actor = RoleConditionedActor(
@@ -140,7 +149,7 @@ class MultiAgentRoleConditionedActor(nn.Module):
             self.actors = nn.ModuleList(
                 [
                     RoleConditionedActor(
-                        obs_dim=obs_dim,
+                        obs_dim=obs_dim + self.global_context_dim,
                         role_dim=role_dim,
                         action_dim=action_dim,
                         hidden_dim=hidden_dim,
@@ -152,6 +161,20 @@ class MultiAgentRoleConditionedActor(nn.Module):
                     for _ in range(num_agents)
                 ]
             )
+
+    def _append_global_context(self, obs: torch.Tensor) -> torch.Tensor:
+        if self.context_encoder is None or self.context_tanh is None:
+            return obs
+        if obs.dim() == 2:
+            context_source = obs.mean(dim=0, keepdim=True)
+            context = self.context_tanh(self.context_encoder(context_source)).expand(obs.shape[0], -1)
+            return torch.cat([obs, context], dim=-1)
+        if obs.dim() == 3:
+            context_source = obs.mean(dim=1)
+            context = self.context_tanh(self.context_encoder(context_source))
+            context = context.unsqueeze(1).expand(-1, obs.shape[1], -1)
+            return torch.cat([obs, context], dim=-1)
+        raise ValueError(f"Unsupported observation rank for global context: {obs.dim()}")
 
     def _append_agent_identity(self, obs: torch.Tensor) -> torch.Tensor:
         if self.actor_type != "shared":
@@ -166,10 +189,16 @@ class MultiAgentRoleConditionedActor(nn.Module):
             return torch.cat([obs, agent_ids], dim=-1)
         raise ValueError(f"Unsupported observation rank for shared actor: {obs.dim()}")
 
+    def _augment_observation(self, obs: torch.Tensor) -> torch.Tensor:
+        augmented = self._append_global_context(obs)
+        if self.actor_type == "shared":
+            return self._append_agent_identity(augmented)
+        return augmented
+
     def forward(self, obs: torch.Tensor, role_mu: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         if self.actor_type == "shared":
             assert self.shared_actor is not None
-            return self.shared_actor(self._append_agent_identity(obs), role_mu)
+            return self.shared_actor(self._augment_observation(obs), role_mu)
 
         squeeze_batch = False
         if obs.dim() == 2:
@@ -181,6 +210,7 @@ class MultiAgentRoleConditionedActor(nn.Module):
             role_mu = role_mu.unsqueeze(0)
         if obs.shape[1] != self.num_agents:
             raise ValueError(f"obs second dimension must match num_agents={self.num_agents}")
+        obs = self._append_global_context(obs)
 
         means: list[torch.Tensor] = []
         stds: list[torch.Tensor] = []

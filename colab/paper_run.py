@@ -81,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-episodes", type=int, default=None)
     parser.add_argument("--eval-episodes", type=int, default=None)
     parser.add_argument("--episode-length", type=int, default=200)
+    parser.add_argument("--delay-mode", choices=("li_original", "bestcase_slack"), default="bestcase_slack")
     parser.add_argument("--update-every-episodes", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=800)
     parser.add_argument("--ppo-epochs", type=int, default=4)
@@ -88,8 +89,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ppo-clip", type=float, default=0.05)
     parser.add_argument("--entropy-coeff", type=float, default=2e-3)
     parser.add_argument("--gradient-clip", type=float, default=1.0)
-    parser.add_argument("--local-reward-weight", type=float, default=0.8)
-    parser.add_argument("--l-i-coeff", type=float, default=1e-4)
+    parser.add_argument("--local-reward-weight", type=float, default=0.6)
+    parser.add_argument("--l-i-coeff", type=float, default=5e-5)
+    parser.add_argument("--l-i-warmup-updates", type=int, default=100)
     parser.add_argument("--lambda-var", type=float, default=1e-5)
     parser.add_argument("--sigma-floor", type=float, default=0.05)
     parser.add_argument("--initial-action-std-env", type=float, default=0.15)
@@ -138,7 +140,7 @@ def resolve_scale_run_profile(spec: RunSpec, args: argparse.Namespace) -> ScaleR
         resource_scaling_mode=args.resource_scaling_mode,
         total_bandwidth_hz=10e6,
         server_cpu_ghz=25.0,
-        u_slack=1.5,
+        u_slack=1.8,
         initial_offloading_mean_env=args.initial_offloading_mean_env,
         initial_power_mean_env=args.initial_power_mean_env,
     )
@@ -147,16 +149,16 @@ def resolve_scale_run_profile(spec: RunSpec, args: argparse.Namespace) -> ScaleR
 
     if args.large_scale_profile == "paper_scale_v1":
         tuned_profiles = {
-            10: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=20e6, server_cpu_ghz=60.0, u_slack=1.9, initial_offloading_mean_env=0.60, initial_power_mean_env=args.initial_power_mean_env),
-            15: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=30e6, server_cpu_ghz=90.0, u_slack=2.1, initial_offloading_mean_env=0.58, initial_power_mean_env=args.initial_power_mean_env),
-            20: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=40e6, server_cpu_ghz=120.0, u_slack=2.3, initial_offloading_mean_env=0.55, initial_power_mean_env=args.initial_power_mean_env),
+            10: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=20e6, server_cpu_ghz=60.0, u_slack=2.2, initial_offloading_mean_env=0.60, initial_power_mean_env=args.initial_power_mean_env),
+            15: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=30e6, server_cpu_ghz=90.0, u_slack=2.4, initial_offloading_mean_env=0.58, initial_power_mean_env=args.initial_power_mean_env),
+            20: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=40e6, server_cpu_ghz=120.0, u_slack=2.6, initial_offloading_mean_env=0.55, initial_power_mean_env=args.initial_power_mean_env),
         }
         return tuned_profiles.get(spec.num_agents, base_profile)
 
     tuned_profiles = {
-        10: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=20e6, server_cpu_ghz=70.0, u_slack=2.1, initial_offloading_mean_env=0.55, initial_power_mean_env=0.90),
-        15: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=30e6, server_cpu_ghz=105.0, u_slack=2.3, initial_offloading_mean_env=0.52, initial_power_mean_env=0.92),
-        20: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=40e6, server_cpu_ghz=140.0, u_slack=2.5, initial_offloading_mean_env=0.50, initial_power_mean_env=0.95),
+        10: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=20e6, server_cpu_ghz=70.0, u_slack=2.4, initial_offloading_mean_env=0.55, initial_power_mean_env=0.90),
+        15: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=30e6, server_cpu_ghz=105.0, u_slack=2.6, initial_offloading_mean_env=0.52, initial_power_mean_env=0.92),
+        20: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=40e6, server_cpu_ghz=140.0, u_slack=2.8, initial_offloading_mean_env=0.50, initial_power_mean_env=0.95),
     }
     return tuned_profiles.get(spec.num_agents, base_profile)
 
@@ -413,6 +415,8 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
         spec.variant_id,
         "--seed",
         str(spec.seed),
+        "--delay-mode",
+        args.delay_mode,
         "--num-agents",
         str(spec.num_agents),
         "--episode-length",
@@ -437,6 +441,8 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
         str(args.gradient_clip),
         "--l-i-coeff",
         str(args.l_i_coeff),
+        "--l-i-warmup-updates",
+        str(args.l_i_warmup_updates),
         "--lambda-var",
         str(args.lambda_var),
         "--sigma-floor",
@@ -488,6 +494,8 @@ def _evaluate_command(
         str(spec.output_root),
         "--episodes",
         str(spec.eval_episodes),
+        "--delay-mode",
+        args.delay_mode,
         "--protocol-stage",
         spec.stage_id,
         "--checkpoint-selection-rule",
