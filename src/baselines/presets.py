@@ -82,7 +82,21 @@ def apply_experiment_variant(config: ExperimentConfig, variant_id: str | None) -
     elif variant.variant_id == "B8":
         model = replace(model, use_role=False, use_l_i=False)
     elif variant.variant_id == "A1":
-        model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=True, use_l_d_simple=False)
+        model = replace(
+            model,
+            critic_type="pgcn",
+            actor_type="individual",
+            use_role=True,
+            use_l_i=True,
+            use_l_d_simple=False,
+            initial_offloading_mean_env=min(model.initial_offloading_mean_env, 0.68),
+            initial_power_mean_env=min(model.initial_power_mean_env, 0.78),
+        )
+        training = replace(
+            training,
+            l_i_coeff=min(training.l_i_coeff, 2e-5),
+            l_i_warmup_updates=max(training.l_i_warmup_updates, 250),
+        )
         environment = replace(environment, graph_type="star", use_mobility=True, use_cpu_dynamics=True)
     elif variant.variant_id == "A2":
         model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=False, use_l_d_simple=False)

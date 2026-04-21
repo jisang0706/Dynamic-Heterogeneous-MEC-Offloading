@@ -7,6 +7,8 @@ from pathlib import Path
 import torch
 
 from colab import paper_run
+from src.baselines import apply_experiment_variant
+from src.config import ExperimentConfig
 
 
 class PaperRunTests(unittest.TestCase):
@@ -115,6 +117,38 @@ class PaperRunTests(unittest.TestCase):
             selected = paper_run.select_checkpoint_candidates(candidates, [100, 4000])
 
         self.assertEqual([info.path.name for info in selected], ["checkpoint_ep0100_u0025.pt", "checkpoint_final.pt"])
+
+    def test_balanced_checkpoint_sorting_prefers_lower_cost_after_timeout(self) -> None:
+        higher_reward_higher_cost = {
+            "metrics": {
+                "mean_timeout_ratio": 0.60,
+                "mean_episode_joint_reward": -5.0e6,
+                "mean_task_processing_cost": 20.0,
+            }
+        }
+        lower_reward_lower_cost = {
+            "metrics": {
+                "mean_timeout_ratio": 0.60,
+                "mean_episode_joint_reward": -5.2e6,
+                "mean_task_processing_cost": 10.0,
+            }
+        }
+
+        self.assertLess(
+            paper_run._summary_sort_key(lower_reward_lower_cost),
+            paper_run._summary_sort_key(higher_reward_higher_cost),
+        )
+
+    def test_a1_variant_softens_role_pressure_and_initial_bias(self) -> None:
+        config = ExperimentConfig()
+
+        resolved, variant = apply_experiment_variant(config, "A1")
+
+        self.assertIsNotNone(variant)
+        self.assertEqual(resolved.training.l_i_coeff, 2e-5)
+        self.assertEqual(resolved.training.l_i_warmup_updates, 250)
+        self.assertEqual(resolved.model.initial_offloading_mean_env, 0.68)
+        self.assertEqual(resolved.model.initial_power_mean_env, 0.78)
 
 
 if __name__ == "__main__":

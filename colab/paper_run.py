@@ -294,8 +294,8 @@ def _summary_sort_key(summary: dict[str, Any]) -> tuple[float, float, float]:
     metrics = summary["metrics"]
     return (
         float(metrics["mean_timeout_ratio"]),
-        -float(metrics["mean_episode_joint_reward"]),
         float(metrics["mean_task_processing_cost"]),
+        -float(metrics["mean_episode_joint_reward"]),
     )
 
 
