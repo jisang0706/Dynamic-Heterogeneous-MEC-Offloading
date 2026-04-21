@@ -534,6 +534,10 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
 
         for step_idx in range(policy.config.environment.episode_length):
             positions = env.positions.copy()
+            # Log operational context from the decision state, not after env dynamics advance.
+            pre_step_distances_m = env.distances_m.copy()
+            pre_step_cpu_ghz = env.cpu_freqs_ghz.copy()
+            pre_step_local_queues = env.local_queues.copy()
             if policy.runner_kind == "fixed":
                 env_action, action_native, log_prob, role_sigma = _select_fixed_action(policy, episode_idx, step_idx)
                 role_mu = np.zeros((policy.config.environment.num_agents, policy.config.model.role_dim), dtype=np.float32)
@@ -611,14 +615,14 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
                     "mean_local_queue": float(env.local_queues.mean()),
                     "mean_task_processing_cost": float(task_cost.mean()),
                     "mean_task_completion_delay_s": float(task_delay.mean()),
-                    "mean_distance_m": float(info["mean_distance_m"]),
-                    "mean_cpu_ghz": float(env.cpu_freqs_ghz.mean()),
+                    "mean_distance_m": float(pre_step_distances_m.mean()),
+                    "mean_cpu_ghz": float(pre_step_cpu_ghz.mean()),
                     "mean_offloading_ratio": float(env_action[:, :-1].mean()),
                     "mean_power_ratio": float(env_action[:, -1].mean()),
                     "device_rewards": reward.astype(np.float32),
-                    "device_distances_m": env.distances_m.astype(np.float32),
-                    "device_cpu_ghz": env.cpu_freqs_ghz.astype(np.float32),
-                    "device_local_queues": env.local_queues.astype(np.float32),
+                    "device_distances_m": pre_step_distances_m.astype(np.float32),
+                    "device_cpu_ghz": pre_step_cpu_ghz.astype(np.float32),
+                    "device_local_queues": pre_step_local_queues.astype(np.float32),
                     "device_timeout_ratio": per_agent_timeout,
                     "device_offloading_ratio": per_agent_offloading,
                     "power_ratio": env_action[:, -1].astype(np.float32),
@@ -631,8 +635,8 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
             for agent_idx in range(policy.config.environment.num_agents):
                 device_records.append(
                     {
-                        "distance_m": float(env.distances_m[agent_idx]),
-                        "cpu_ghz": float(env.cpu_freqs_ghz[agent_idx]),
+                        "distance_m": float(pre_step_distances_m[agent_idx]),
+                        "cpu_ghz": float(pre_step_cpu_ghz[agent_idx]),
                         "offloading_ratio": float(per_agent_offloading[agent_idx]),
                         "power_ratio": float(env_action[agent_idx, -1]),
                         "timeout_ratio": float(per_agent_timeout[agent_idx]),
