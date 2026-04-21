@@ -106,8 +106,8 @@ class EnvironmentConfig:
     delay_mode: str = "bestcase_slack"
     u_slack: float = 1.8
     reward_timeout_penalty: float = 3000.0
-    reward_lateness_penalty: float = 400.0
-    reward_lateness_clip: float = 2.0
+    reward_lateness_penalty: float = 150.0
+    reward_lateness_clip: float = 1.5
     reward_scale: float = 1000.0
     delay_weight: float = 0.5
     energy_weight: float = 0.5
@@ -240,8 +240,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delay-mode", choices=("li_original", "bestcase_slack"), default="bestcase_slack")
     parser.add_argument("--u-slack", type=float, default=1.8)
     parser.add_argument("--reward-timeout-penalty", type=float, default=3000.0)
-    parser.add_argument("--reward-lateness-penalty", type=float, default=400.0)
-    parser.add_argument("--reward-lateness-clip", type=float, default=2.0)
+    parser.add_argument("--reward-lateness-penalty", type=float, default=150.0)
+    parser.add_argument("--reward-lateness-clip", type=float, default=1.5)
     parser.add_argument("--total-bandwidth-hz", type=float, default=10e6)
     parser.add_argument("--server-cpu-ghz", type=float, default=25.0)
     parser.add_argument("--resource-scaling-mode", choices=("fixed", "linear_after_threshold"), default="fixed")
