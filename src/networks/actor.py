@@ -109,6 +109,7 @@ class MultiAgentRoleConditionedActor(nn.Module):
         hidden_dim: int = 128,
         use_role: bool = True,
         global_context_dim: int = 8,
+        context_pooling: str = "mean",
         initial_action_std_env: float = 0.25,
         initial_offloading_mean_env: float = 0.65,
         initial_power_mean_env: float = 0.8,
@@ -116,6 +117,8 @@ class MultiAgentRoleConditionedActor(nn.Module):
         super().__init__()
         if actor_type not in {"shared", "individual"}:
             raise ValueError(f"Unsupported actor_type: {actor_type}")
+        if context_pooling not in {"mean", "mean_max_min"}:
+            raise ValueError(f"Unsupported context_pooling: {context_pooling}")
         self.num_agents = num_agents
         self.actor_type = actor_type
         self.use_role = use_role
@@ -123,9 +126,11 @@ class MultiAgentRoleConditionedActor(nn.Module):
         self.role_dim = role_dim
         self.action_dim = action_dim
         self.global_context_dim = max(int(global_context_dim), 0)
+        self.context_pooling = context_pooling
         tanh_gain = nn.init.calculate_gain("tanh")
         if self.global_context_dim > 0:
-            self.context_encoder = orthogonal_init(nn.Linear(obs_dim, self.global_context_dim), gain=tanh_gain)
+            context_input_dim = obs_dim if context_pooling == "mean" else obs_dim * 3
+            self.context_encoder = orthogonal_init(nn.Linear(context_input_dim, self.global_context_dim), gain=tanh_gain)
             self.context_tanh = nn.Tanh()
         else:
             self.context_encoder = None
@@ -166,11 +171,33 @@ class MultiAgentRoleConditionedActor(nn.Module):
         if self.context_encoder is None or self.context_tanh is None:
             return obs
         if obs.dim() == 2:
-            context_source = obs.mean(dim=0, keepdim=True)
+            context_mean = obs.mean(dim=0, keepdim=True)
+            if self.context_pooling == "mean":
+                context_source = context_mean
+            else:
+                context_source = torch.cat(
+                    [
+                        context_mean,
+                        obs.max(dim=0, keepdim=True).values,
+                        obs.min(dim=0, keepdim=True).values,
+                    ],
+                    dim=-1,
+                )
             context = self.context_tanh(self.context_encoder(context_source)).expand(obs.shape[0], -1)
             return torch.cat([obs, context], dim=-1)
         if obs.dim() == 3:
-            context_source = obs.mean(dim=1)
+            context_mean = obs.mean(dim=1)
+            if self.context_pooling == "mean":
+                context_source = context_mean
+            else:
+                context_source = torch.cat(
+                    [
+                        context_mean,
+                        obs.max(dim=1).values,
+                        obs.min(dim=1).values,
+                    ],
+                    dim=-1,
+                )
             context = self.context_tanh(self.context_encoder(context_source))
             context = context.unsqueeze(1).expand(-1, obs.shape[1], -1)
             return torch.cat([obs, context], dim=-1)

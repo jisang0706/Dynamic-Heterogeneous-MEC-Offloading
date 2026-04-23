@@ -117,6 +117,8 @@ class EnvironmentConfig:
     observation_dim: int = 14
     central_observation_dim: int = 3
     actor_queue_broadcast_dim: int = 2
+    use_delay_aware_actor_features: bool = False
+    actor_relative_feature_dim: int = 3
 
     @property
     def noise_density_w_hz(self) -> float:
@@ -144,7 +146,8 @@ class EnvironmentConfig:
 
     @property
     def actor_observation_dim(self) -> int:
-        return self.observation_dim + self.actor_queue_broadcast_dim
+        delay_aware_dim = self.actor_relative_feature_dim if self.use_delay_aware_actor_features else 0
+        return self.observation_dim + self.actor_queue_broadcast_dim + delay_aware_dim
 
     @property
     def max_task_work_gcycles(self) -> float:
@@ -173,6 +176,7 @@ class ModelConfig:
     trajectory_hidden_dim: int = 64
     action_dim: int = 4
     actor_global_context_dim: int = 8
+    actor_context_pooling: str = "mean"
     initial_action_std_env: float = 0.15
     initial_offloading_mean_env: float = 0.70
     initial_power_mean_env: float = 0.8
@@ -247,6 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resource-scaling-mode", choices=("fixed", "linear_after_threshold"), default="fixed")
     parser.add_argument("--resource-scaling-base-agents", type=int, default=5)
     parser.add_argument("--resource-scaling-start-agents", type=int, default=10)
+    parser.add_argument("--use-delay-aware-actor-features", type=_str_to_bool, default=True)
 
     parser.add_argument("--critic-type", choices=("pgcn", "mlp", "set"), default="pgcn")
     parser.add_argument("--use-role", type=_str_to_bool, default=True)
@@ -256,6 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--role-dim", type=int, default=3)
     parser.add_argument("--actor-hidden-dim", type=int, default=128)
     parser.add_argument("--actor-global-context-dim", type=int, default=8)
+    parser.add_argument("--actor-context-pooling", choices=("mean", "mean_max_min"), default="mean_max_min")
     parser.add_argument("--initial-action-std-env", type=float, default=0.15)
     parser.add_argument("--initial-offloading-mean-env", type=float, default=0.70)
     parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
@@ -308,6 +314,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         resource_scaling_mode=args.resource_scaling_mode,
         resource_scaling_base_agents=args.resource_scaling_base_agents,
         resource_scaling_start_agents=args.resource_scaling_start_agents,
+        use_delay_aware_actor_features=args.use_delay_aware_actor_features,
     )
     model = ModelConfig(
         critic_type=args.critic_type,
@@ -318,6 +325,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         role_dim=args.role_dim,
         actor_hidden_dim=args.actor_hidden_dim,
         actor_global_context_dim=args.actor_global_context_dim,
+        actor_context_pooling=args.actor_context_pooling,
         initial_action_std_env=args.initial_action_std_env,
         initial_offloading_mean_env=args.initial_offloading_mean_env,
         initial_power_mean_env=args.initial_power_mean_env,
@@ -366,6 +374,10 @@ def build_config_from_dict(payload: dict[str, Any]) -> ExperimentConfig:
 
     if "actor_global_context_dim" not in model_payload:
         model_payload["actor_global_context_dim"] = 0
+    if "actor_context_pooling" not in model_payload:
+        model_payload["actor_context_pooling"] = "mean"
+    if "use_delay_aware_actor_features" not in environment_payload:
+        environment_payload["use_delay_aware_actor_features"] = False
 
     for key in ("task_size_range_mb", "task_density_range_gcycles_per_mb", "task_deadline_range_s"):
         if key in environment_payload:

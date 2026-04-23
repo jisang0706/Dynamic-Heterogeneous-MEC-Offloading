@@ -181,6 +181,7 @@ class PPOTrainer:
             hidden_dim=config.model.actor_hidden_dim,
             use_role=config.model.use_role,
             global_context_dim=config.model.actor_global_context_dim,
+            context_pooling=config.model.actor_context_pooling,
             initial_action_std_env=config.model.initial_action_std_env,
             initial_offloading_mean_env=config.model.initial_offloading_mean_env,
             initial_power_mean_env=config.model.initial_power_mean_env,
@@ -202,9 +203,12 @@ class PPOTrainer:
         self.critic_optimizer = self.torch.optim.Adam(self.critic.parameters(), lr=config.training.learning_rate)
         self.device_obs_scaler = None
         self.server_obs_scaler = None
+        self.actor_obs_scaler = None
         if config.training.use_obs_scaling:
             self.device_obs_scaler = ObservationScaler(shape=(config.environment.observation_dim,))
             self.server_obs_scaler = ObservationScaler(shape=(config.environment.central_observation_dim,))
+            if config.environment.use_delay_aware_actor_features:
+                self.actor_obs_scaler = ObservationScaler(shape=(config.environment.actor_observation_dim,))
         self.reward_scalers = (
             [RewardScaler(gamma=config.training.gamma) for _ in range(config.environment.num_agents)]
             if config.training.use_reward_scaling
@@ -257,20 +261,45 @@ class PPOTrainer:
             scaled = scaled[0]
         return self.torch.from_numpy(scaled).float().to(self.device)
 
-    def _build_actor_observation(self, core_obs: Any, server_info: Any) -> Any:
+    def _scale_actor_obs(self, actor_obs: Any, update_stats: bool) -> Any:
+        if self.actor_obs_scaler is None:
+            return actor_obs
+        if update_stats:
+            scaled = self.actor_obs_scaler.update_and_transform(actor_obs.detach().cpu().numpy())
+        else:
+            scaled = self.actor_obs_scaler.transform(actor_obs.detach().cpu().numpy())
+        return self.torch.from_numpy(scaled).float().to(self.device)
+
+    def _build_actor_observation(
+        self,
+        core_obs: Any,
+        server_info: Any,
+        actor_relative_features: Any | None = None,
+    ) -> Any:
         queue_broadcast = server_info[..., : self.config.environment.actor_queue_broadcast_dim]
         if core_obs.dim() == 2:
             expanded_queue = queue_broadcast.unsqueeze(0).expand(core_obs.shape[0], -1)
-            return self.torch.cat([core_obs, expanded_queue], dim=-1)
+            chunks = [core_obs, expanded_queue]
+            if actor_relative_features is not None:
+                chunks.append(actor_relative_features)
+            return self.torch.cat(chunks, dim=-1)
         expanded_queue = queue_broadcast.unsqueeze(1).expand(-1, core_obs.shape[1], -1)
-        return self.torch.cat([core_obs, expanded_queue], dim=-1)
+        chunks = [core_obs, expanded_queue]
+        if actor_relative_features is not None:
+            chunks.append(actor_relative_features)
+        return self.torch.cat(chunks, dim=-1)
 
     def _prepare_model_observation(self, observation: Any, update_stats: bool) -> tuple[Any, Any, Any]:
-        core_obs = self.torch.from_numpy(observation.device_obs).float().to(self.device)
-        server_info = self.torch.from_numpy(observation.server_obs).float().to(self.device)
-        core_obs = self._scale_device_obs(core_obs, update_stats)
-        server_info = self._scale_server_obs(server_info, update_stats)
-        actor_obs = self._build_actor_observation(core_obs, server_info)
+        raw_core_obs = self.torch.from_numpy(observation.device_obs).float().to(self.device)
+        raw_server_info = self.torch.from_numpy(observation.server_obs).float().to(self.device)
+        core_obs = self._scale_device_obs(raw_core_obs, update_stats)
+        server_info = self._scale_server_obs(raw_server_info, update_stats)
+        if self.config.environment.use_delay_aware_actor_features:
+            actor_relative_features = self.torch.from_numpy(self.env.compute_actor_relative_features()).float().to(self.device)
+            actor_obs = self._build_actor_observation(raw_core_obs, raw_server_info, actor_relative_features)
+            actor_obs = self._scale_actor_obs(actor_obs, update_stats)
+        else:
+            actor_obs = self._build_actor_observation(core_obs, server_info)
         return actor_obs, core_obs, server_info
 
     @staticmethod
@@ -319,8 +348,13 @@ class PPOTrainer:
             return
         checkpoint = self._torch_load_checkpoint(checkpoint_path)
         checkpoint_model = dict(checkpoint.get("config", {}).get("model", {}))
+        checkpoint_environment = dict(checkpoint.get("config", {}).get("environment", {}))
         if "actor_global_context_dim" not in checkpoint_model:
             self.config.model.actor_global_context_dim = 0
+        if "actor_context_pooling" not in checkpoint_model:
+            self.config.model.actor_context_pooling = "mean"
+        if "use_delay_aware_actor_features" not in checkpoint_environment:
+            self.config.environment.use_delay_aware_actor_features = False
 
     def _effective_l_i_coeff(self) -> float:
         if not self.config.model.use_role or not self.config.model.use_l_i:
@@ -351,6 +385,8 @@ class PPOTrainer:
             self.device_obs_scaler.load_state_dict(checkpoint["device_obs_scaler"])
         if checkpoint.get("server_obs_scaler") is not None and self.server_obs_scaler is not None:
             self.server_obs_scaler.load_state_dict(checkpoint["server_obs_scaler"])
+        if checkpoint.get("actor_obs_scaler") is not None and self.actor_obs_scaler is not None:
+            self.actor_obs_scaler.load_state_dict(checkpoint["actor_obs_scaler"])
         reward_scaler_states = checkpoint.get("reward_scalers")
         if reward_scaler_states is None and checkpoint.get("reward_scaler") is not None:
             reward_scaler_states = [checkpoint["reward_scaler"] for _ in range(self.config.environment.num_agents)]
@@ -438,6 +474,7 @@ class PPOTrainer:
             "trajectory_encoder": None if self.trajectory_encoder is None else self.trajectory_encoder.state_dict(),
             "device_obs_scaler": None if self.device_obs_scaler is None else self.device_obs_scaler.state_dict(),
             "server_obs_scaler": None if self.server_obs_scaler is None else self.server_obs_scaler.state_dict(),
+            "actor_obs_scaler": None if self.actor_obs_scaler is None else self.actor_obs_scaler.state_dict(),
             "reward_scalers": None if self.reward_scalers is None else [scaler.state_dict() for scaler in self.reward_scalers],
             "episode_history": self.episode_history,
             "update_history": self.update_history,

@@ -40,6 +40,7 @@ class LoadedPolicy:
     trajectory_encoder: Any | None = None
     device_obs_scaler: Any | None = None
     server_obs_scaler: Any | None = None
+    actor_obs_scaler: Any | None = None
     use_role: bool = False
 
 
@@ -317,6 +318,8 @@ def _load_trainer_checkpoint(trainer: Any, checkpoint: dict[str, Any], runner_ki
             trainer.device_obs_scaler.load_state_dict(checkpoint["device_obs_scaler"])
         if checkpoint.get("server_obs_scaler") is not None and getattr(trainer, "server_obs_scaler", None) is not None:
             trainer.server_obs_scaler.load_state_dict(checkpoint["server_obs_scaler"])
+        if checkpoint.get("actor_obs_scaler") is not None and getattr(trainer, "actor_obs_scaler", None) is not None:
+            trainer.actor_obs_scaler.load_state_dict(checkpoint["actor_obs_scaler"])
         return
 
     if checkpoint.get("critic") is not None:
@@ -332,6 +335,8 @@ def _load_trainer_checkpoint(trainer: Any, checkpoint: dict[str, Any], runner_ki
         trainer.device_obs_scaler.load_state_dict(checkpoint["device_obs_scaler"])
     if checkpoint.get("server_obs_scaler") is not None and trainer.server_obs_scaler is not None:
         trainer.server_obs_scaler.load_state_dict(checkpoint["server_obs_scaler"])
+    if checkpoint.get("actor_obs_scaler") is not None and getattr(trainer, "actor_obs_scaler", None) is not None:
+        trainer.actor_obs_scaler.load_state_dict(checkpoint["actor_obs_scaler"])
 
 
 def _torch_load_checkpoint(checkpoint_path: Path) -> dict[str, Any]:
@@ -372,6 +377,7 @@ def _load_checkpoint_policy(checkpoint_path: Path) -> LoadedPolicy:
         trajectory_encoder=getattr(trainer, "trajectory_encoder", None),
         device_obs_scaler=getattr(trainer, "device_obs_scaler", None),
         server_obs_scaler=getattr(trainer, "server_obs_scaler", None),
+        actor_obs_scaler=getattr(trainer, "actor_obs_scaler", None),
         use_role=bool(eval_config.model.use_role),
     )
 
@@ -433,13 +439,32 @@ def _scale_server_obs(policy: LoadedPolicy, server_obs: np.ndarray) -> torch.Ten
     return tensor
 
 
-def _build_actor_observation(policy: LoadedPolicy, core_obs: torch.Tensor, server_info: torch.Tensor) -> torch.Tensor:
+def _scale_actor_obs(policy: LoadedPolicy, actor_obs: np.ndarray) -> torch.Tensor:
+    tensor = torch.from_numpy(actor_obs).float().to(policy.device)
+    if policy.actor_obs_scaler is not None:
+        scaled = policy.actor_obs_scaler.transform(actor_obs)
+        tensor = torch.from_numpy(scaled).float().to(policy.device)
+    return tensor
+
+
+def _build_actor_observation(
+    policy: LoadedPolicy,
+    core_obs: torch.Tensor,
+    server_info: torch.Tensor,
+    actor_relative_features: torch.Tensor | None = None,
+) -> torch.Tensor:
     queue_broadcast = server_info[..., : policy.config.environment.actor_queue_broadcast_dim]
     if core_obs.dim() == 2:
         expanded_queue = queue_broadcast.unsqueeze(0).expand(core_obs.shape[0], -1)
-        return torch.cat([core_obs, expanded_queue], dim=-1)
+        chunks = [core_obs, expanded_queue]
+        if actor_relative_features is not None:
+            chunks.append(actor_relative_features)
+        return torch.cat(chunks, dim=-1)
     expanded_queue = queue_broadcast.unsqueeze(1).expand(-1, core_obs.shape[1], -1)
-    return torch.cat([core_obs, expanded_queue], dim=-1)
+    chunks = [core_obs, expanded_queue]
+    if actor_relative_features is not None:
+        chunks.append(actor_relative_features)
+    return torch.cat(chunks, dim=-1)
 
 
 def _select_fixed_action(policy: LoadedPolicy, episode_idx: int, step_idx: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
@@ -465,9 +490,18 @@ def _select_learned_action(
     deterministic_policy: bool,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
     with torch.no_grad():
+        raw_core_obs = torch.from_numpy(observation.device_obs).float().to(policy.device)
+        raw_server_info = torch.from_numpy(observation.server_obs).float().to(policy.device)
         core_obs = _scale_device_obs(policy, observation.device_obs)
         server_info = _scale_server_obs(policy, observation.server_obs)
-        actor_obs = _build_actor_observation(policy, core_obs, server_info)
+        if policy.config.environment.use_delay_aware_actor_features:
+            actor_relative_features = torch.from_numpy(policy.env.compute_actor_relative_features()).float().to(policy.device)
+            actor_obs_np = (
+                _build_actor_observation(policy, raw_core_obs, raw_server_info, actor_relative_features).cpu().numpy()
+            )
+            actor_obs = _scale_actor_obs(policy, actor_obs_np)
+        else:
+            actor_obs = _build_actor_observation(policy, core_obs, server_info)
 
         role_mu = None
         role_sigma = None

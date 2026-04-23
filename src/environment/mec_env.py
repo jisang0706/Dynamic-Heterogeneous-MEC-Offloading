@@ -195,6 +195,51 @@ class DynamicMECEnv:
             "delay_threshold_s": delay_threshold_s.astype(np.float32),
         }
 
+    def compute_actor_relative_features(self) -> np.ndarray:
+        if self.config.actor_relative_feature_dim <= 0:
+            return np.empty((self.config.num_agents, 0), dtype=np.float32)
+        if self.config.actor_relative_feature_dim != 3:
+            raise ValueError("compute_actor_relative_features currently supports actor_relative_feature_dim=3 only.")
+        if self.local_queues.size == 0 or self.task_matrix.size == 0:
+            return np.zeros((self.config.num_agents, self.config.actor_relative_feature_dim), dtype=np.float32)
+
+        task_work_gcycles = self.task_data_size_mb * self.task_density_gcycles_per_mb
+        mean_task_work_gcycles = task_work_gcycles.mean(axis=1)
+        mean_task_bits = self.task_data_size_mb.mean(axis=1) * 1e6
+        local_cpu_ghz = np.maximum(self.cpu_freqs_ghz, 1e-6)
+        server_cpu_ghz = max(self.config.effective_server_cpu_ghz, 1e-6)
+
+        local_queue_delay_s = self.local_queues / local_cpu_ghz
+        edge_queue_delay_s = np.full(
+            self.config.num_agents,
+            self.edge_queue / server_cpu_ghz,
+            dtype=np.float32,
+        )
+
+        device_bandwidth_hz = self.config.effective_total_bandwidth_hz / float(self.config.num_agents)
+        noise_power_w = self.config.noise_density_w_hz * device_bandwidth_hz
+        tx_power_w = self.max_tx_powers_mw / 1000.0
+        snr = (tx_power_w * self.channel_gains) / max(noise_power_w, 1e-12)
+        beta_max_bps = device_bandwidth_hz * np.log2(1.0 + np.maximum(snr, 0.0))
+        beta_max_bps = np.maximum(beta_max_bps, self.config.min_rate_bps)
+
+        mean_local_task_delay_s = mean_task_work_gcycles / local_cpu_ghz
+        mean_edge_task_delay_s = (mean_task_bits / beta_max_bps) + (mean_task_work_gcycles / server_cpu_ghz)
+        local_edge_delay_gap_s = (
+            local_queue_delay_s + mean_local_task_delay_s
+        ) - (
+            edge_queue_delay_s + mean_edge_task_delay_s
+        )
+
+        return np.stack(
+            (
+                local_queue_delay_s,
+                edge_queue_delay_s,
+                local_edge_delay_gap_s,
+            ),
+            axis=-1,
+        ).astype(np.float32)
+
     def _build_observation(self) -> ObservationBundle:
         device_obs = []
         for index in range(self.config.num_agents):

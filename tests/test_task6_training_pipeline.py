@@ -90,6 +90,7 @@ class Task6TrainingPipelineTests(unittest.TestCase):
             action_dim=4,
             hidden_dim=64,
             use_role=False,
+            context_pooling="mean_max_min",
         )
         baseline_obs = torch.zeros(3, 16)
         shifted_obs = torch.zeros(3, 16)
@@ -99,6 +100,35 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         shifted_mean, _ = actor(shifted_obs)
 
         self.assertFalse(torch.allclose(baseline_mean[0], shifted_mean[0]))
+
+    def test_prepare_model_observation_adds_delay_aware_actor_features(self) -> None:
+        config = ExperimentConfig(
+            seed=5,
+            environment=EnvironmentConfig(
+                num_agents=5,
+                episode_length=2,
+                graph_type="star",
+                use_delay_aware_actor_features=True,
+            ),
+            model=ModelConfig(
+                critic_type="mlp",
+                use_role=False,
+                use_l_i=False,
+                actor_type="individual",
+                actor_context_pooling="mean_max_min",
+            ),
+            training=TrainingConfig(run_mode="train", total_episodes=1, update_every_episodes=1),
+        )
+        trainer = PPOTrainer(config)
+        observation = trainer.env.reset()
+
+        actor_obs, core_obs, server_info = trainer._prepare_model_observation(observation, update_stats=True)
+
+        self.assertEqual(tuple(core_obs.shape), (5, 14))
+        self.assertEqual(tuple(server_info.shape), (3,))
+        self.assertEqual(tuple(actor_obs.shape), (5, 19))
+        self.assertIsNotNone(trainer.actor_obs_scaler)
+        self.assertTrue(torch.isfinite(actor_obs).all())
 
     def test_rollout_buffer_computes_agentwise_returns_from_stored_transitions(self) -> None:
         buffer = RolloutBuffer()
