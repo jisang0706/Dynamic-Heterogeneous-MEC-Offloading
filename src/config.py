@@ -196,6 +196,9 @@ class TrainingConfig:
     l_i_coeff: float = 5e-5
     l_i_warmup_updates: int = 100
     l_d_coeff: float = 1e-3
+    monotonic_offloading_coeff: float = 0.0
+    monotonic_load_margin: float = 0.1
+    monotonic_offload_margin: float = 0.0
     lambda_var: float = 1e-5
     sigma_floor: float = 0.05
     gradient_clip: float = 1.0
@@ -278,6 +281,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--l-i-coeff", type=float, default=5e-5)
     parser.add_argument("--l-i-warmup-updates", type=int, default=100)
     parser.add_argument("--l-d-coeff", type=float, default=1e-3)
+    parser.add_argument("--monotonic-offloading-coeff", type=float, default=1e-2)
+    parser.add_argument("--monotonic-load-margin", type=float, default=0.1)
+    parser.add_argument("--monotonic-offload-margin", type=float, default=0.0)
     parser.add_argument("--lambda-var", type=float, default=1e-5)
     parser.add_argument("--sigma-floor", type=float, default=0.05)
     parser.add_argument("--gradient-clip", type=float, default=1.0)
@@ -343,6 +349,9 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         l_i_coeff=args.l_i_coeff,
         l_i_warmup_updates=args.l_i_warmup_updates,
         l_d_coeff=args.l_d_coeff,
+        monotonic_offloading_coeff=args.monotonic_offloading_coeff,
+        monotonic_load_margin=args.monotonic_load_margin,
+        monotonic_offload_margin=args.monotonic_offload_margin,
         lambda_var=args.lambda_var,
         sigma_floor=args.sigma_floor,
         gradient_clip=args.gradient_clip,

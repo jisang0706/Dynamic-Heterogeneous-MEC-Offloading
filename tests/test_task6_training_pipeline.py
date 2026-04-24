@@ -130,6 +130,50 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         self.assertIsNotNone(trainer.actor_obs_scaler)
         self.assertTrue(torch.isfinite(actor_obs).all())
 
+    def test_monotonic_offloading_loss_penalizes_reverse_ordering(self) -> None:
+        config = ExperimentConfig(
+            seed=7,
+            environment=EnvironmentConfig(
+                num_agents=3,
+                episode_length=2,
+                graph_type="star",
+                use_delay_aware_actor_features=True,
+            ),
+            model=ModelConfig(
+                critic_type="mlp",
+                use_role=False,
+                use_l_i=False,
+                actor_type="individual",
+                actor_context_pooling="mean_max_min",
+            ),
+            training=TrainingConfig(
+                run_mode="train",
+                total_episodes=1,
+                update_every_episodes=1,
+                monotonic_offloading_coeff=1e-2,
+                monotonic_load_margin=0.0,
+                monotonic_offload_margin=0.0,
+            ),
+        )
+        trainer = PPOTrainer(config)
+        actor_obs = torch.zeros(2, 3, 19, dtype=torch.float32)
+        actor_obs[:, :, 16] = torch.tensor([2.0, 1.0, 0.0], dtype=torch.float32)
+
+        violating_policy_mean = torch.zeros(2, 3, 4, dtype=torch.float32)
+        violating_policy_mean[:, 0, :3] = 4.0
+        violating_policy_mean[:, 1, :3] = 5.0
+        violating_policy_mean[:, 2, :3] = 6.0
+        violating_loss = trainer._compute_monotonic_offloading_loss(actor_obs, violating_policy_mean)
+
+        monotone_policy_mean = torch.zeros(2, 3, 4, dtype=torch.float32)
+        monotone_policy_mean[:, 0, :3] = 6.0
+        monotone_policy_mean[:, 1, :3] = 5.0
+        monotone_policy_mean[:, 2, :3] = 4.0
+        monotone_loss = trainer._compute_monotonic_offloading_loss(actor_obs, monotone_policy_mean)
+
+        self.assertGreater(float(violating_loss.item()), 0.0)
+        self.assertAlmostEqual(float(monotone_loss.item()), 0.0, places=6)
+
     def test_rollout_buffer_computes_agentwise_returns_from_stored_transitions(self) -> None:
         buffer = RolloutBuffer()
         for reward_value, done in ((1.0, False), (2.0, True)):

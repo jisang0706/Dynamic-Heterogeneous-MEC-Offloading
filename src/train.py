@@ -32,6 +32,7 @@ class TrainingUpdateSummary:
     entropy: float
     l_i_loss: float | None = None
     effective_l_i_coeff: float | None = None
+    monotonic_loss: float | None = None
     l_var_loss: float | None = None
     role_mu_var_per_dim: list[float] | None = None
     role_sigma_mean_per_dim: list[float] | None = None
@@ -60,6 +61,7 @@ class TrainingRunSummary:
     last_critic_loss: float | None = None
     last_entropy: float | None = None
     last_l_i_loss: float | None = None
+    last_monotonic_loss: float | None = None
     last_l_var_loss: float | None = None
 
 
@@ -439,6 +441,7 @@ class PPOTrainer:
             "entropy": summary.entropy,
             "l_i_loss": summary.l_i_loss,
             "effective_l_i_coeff": summary.effective_l_i_coeff,
+            "monotonic_loss": summary.monotonic_loss,
             "l_var_loss": summary.l_var_loss,
             "role_mu_var_per_dim": summary.role_mu_var_per_dim,
             "role_sigma_mean_per_dim": summary.role_sigma_mean_per_dim,
@@ -525,6 +528,36 @@ class PPOTrainer:
             traj_mu=traj_mu,
             traj_std=traj_sigma,
         )
+
+    def _compute_monotonic_offloading_loss(self, actor_obs: Any, policy_mean_native: Any) -> Any:
+        if (
+            self.config.training.monotonic_offloading_coeff <= 0.0
+            or not self.config.environment.use_delay_aware_actor_features
+        ):
+            return actor_obs.new_tensor(0.0)
+
+        feature_index = self.config.environment.observation_dim + self.config.environment.actor_queue_broadcast_dim
+        if actor_obs.shape[-1] <= feature_index:
+            return actor_obs.new_tensor(0.0)
+
+        local_load_proxy = actor_obs[..., feature_index]
+        mean_offloading_env = self.actor.action_to_env(policy_mean_native[..., :-1]).mean(dim=-1)
+        if local_load_proxy.dim() == 1:
+            local_load_proxy = local_load_proxy.unsqueeze(0)
+            mean_offloading_env = mean_offloading_env.unsqueeze(0)
+
+        load_i = local_load_proxy.unsqueeze(-1)
+        load_j = local_load_proxy.unsqueeze(-2)
+        offload_i = mean_offloading_env.unsqueeze(-1)
+        offload_j = mean_offloading_env.unsqueeze(-2)
+        valid_pairs = load_i > (load_j + float(self.config.training.monotonic_load_margin))
+        if not bool(valid_pairs.any()):
+            return actor_obs.new_tensor(0.0)
+
+        violation = self.torch.relu(
+            offload_j - offload_i + float(self.config.training.monotonic_offload_margin)
+        )
+        return violation[valid_pairs].mean()
 
     def _compute_role_diagnostics(self, role_mu: Any, role_sigma: Any | None) -> dict[str, Any] | None:
         if role_sigma is None:
@@ -681,6 +714,7 @@ class PPOTrainer:
         critic_losses: list[float] = []
         entropies: list[float] = []
         l_i_losses: list[float] = []
+        monotonic_losses: list[float] = []
         l_var_losses: list[float] = []
         role_mu_var_history: list[Any] = []
         role_sigma_mean_history: list[Any] = []
@@ -701,7 +735,7 @@ class PPOTrainer:
                 returns = gae_batch["return"][step_indices]
 
                 role_mu, role_sigma = self._actor_role_posterior(actor_obs)
-                log_prob, entropy, _, _ = self.actor.evaluate_actions(
+                log_prob, entropy, policy_mean_native, _ = self.actor.evaluate_actions(
                     actor_obs,
                     action,
                     role_mu if self.config.model.use_role else None,
@@ -735,11 +769,14 @@ class PPOTrainer:
                 if self.config.model.use_role and self.config.model.use_l_d_simple:
                     flat_role_mu = role_mu.reshape(-1, role_mu.shape[-1])
                     l_d_loss = self.role_diversity_loss(flat_role_mu)
+                monotonic_loss = self._compute_monotonic_offloading_loss(actor_obs, policy_mean_native)
+                monotonic_losses.append(float(monotonic_loss.item()))
 
                 actor_loss = (
                     policy_loss
                     - self.config.training.entropy_coeff * entropy_bonus
                     + effective_l_i_coeff * l_i_loss
+                    + self.config.training.monotonic_offloading_coeff * monotonic_loss
                     + self.config.training.lambda_var * l_var_loss
                     + self.config.training.l_d_coeff * l_d_loss
                 )
@@ -792,6 +829,7 @@ class PPOTrainer:
             entropy=sum(entropies) / max(len(entropies), 1),
             l_i_loss=(sum(l_i_losses) / len(l_i_losses)) if l_i_losses else None,
             effective_l_i_coeff=effective_l_i_coeff if self.config.model.use_l_i else None,
+            monotonic_loss=(sum(monotonic_losses) / len(monotonic_losses)) if monotonic_losses else None,
             l_var_loss=(sum(l_var_losses) / len(l_var_losses)) if l_var_losses else None,
             role_mu_var_per_dim=(
                 self.torch.stack(role_mu_var_history, dim=0).mean(dim=0).tolist() if role_mu_var_history else None
@@ -904,12 +942,17 @@ class PPOTrainer:
             last_entropy=None if last_update_record is None else float(last_update_record["entropy"]),
             last_l_i_loss=(
                 None
-                if last_update_record is None or last_update_record["l_i_loss"] is None
+                if last_update_record is None or last_update_record.get("l_i_loss") is None
                 else float(last_update_record["l_i_loss"])
+            ),
+            last_monotonic_loss=(
+                None
+                if last_update_record is None or last_update_record.get("monotonic_loss") is None
+                else float(last_update_record["monotonic_loss"])
             ),
             last_l_var_loss=(
                 None
-                if last_update_record is None or last_update_record["l_var_loss"] is None
+                if last_update_record is None or last_update_record.get("l_var_loss") is None
                 else float(last_update_record["l_var_loss"])
             ),
         )
@@ -1001,6 +1044,7 @@ def run_training(config: ExperimentConfig) -> TrainingRunSummary:
             last_critic_loss=summary.last_critic_loss,
             last_entropy=summary.last_entropy,
             last_l_i_loss=summary.last_l_i_loss,
+            last_monotonic_loss=summary.last_monotonic_loss,
             last_l_var_loss=None,
         )
     if variant.runner_kind == "fixed":
@@ -1017,6 +1061,7 @@ def run_training(config: ExperimentConfig) -> TrainingRunSummary:
             last_critic_loss=None,
             last_entropy=None,
             last_l_i_loss=None,
+            last_monotonic_loss=None,
             last_l_var_loss=None,
         )
     if variant.runner_kind == "external":
@@ -1039,6 +1084,7 @@ def main() -> None:
             f"last_actor_loss={summary.last_actor_loss if summary.last_actor_loss is not None else 'n/a'} "
             f"last_critic_loss={summary.last_critic_loss if summary.last_critic_loss is not None else 'n/a'} "
             f"last_l_i_loss={summary.last_l_i_loss if summary.last_l_i_loss is not None else 'n/a'} "
+            f"last_monotonic_loss={summary.last_monotonic_loss if summary.last_monotonic_loss is not None else 'n/a'} "
             f"last_l_var_loss={summary.last_l_var_loss if summary.last_l_var_loss is not None else 'n/a'} "
             f"checkpoint={summary.last_checkpoint_path if summary.last_checkpoint_path is not None else 'n/a'}"
         )
