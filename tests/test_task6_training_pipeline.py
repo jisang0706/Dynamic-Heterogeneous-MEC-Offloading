@@ -197,9 +197,9 @@ class Task6TrainingPipelineTests(unittest.TestCase):
                 run_mode="train",
                 total_episodes=4000,
                 update_every_episodes=4,
-                monotonic_offloading_coeff=3e-3,
-                monotonic_offloading_coeff_final=0.0,
-                monotonic_decay_start_fraction=0.4,
+                monotonic_offloading_coeff=1e-3,
+                monotonic_offloading_coeff_final=5e-4,
+                monotonic_decay_start_fraction=0.6,
                 monotonic_decay_end_fraction=1.0,
             ),
         )
@@ -207,17 +207,17 @@ class Task6TrainingPipelineTests(unittest.TestCase):
 
         trainer.updates_completed = 0
         early_coeff = trainer._effective_monotonic_coeff()
-        trainer.updates_completed = 399
+        trainer.updates_completed = 599
         pre_decay_coeff = trainer._effective_monotonic_coeff()
-        trainer.updates_completed = 699
+        trainer.updates_completed = 799
         mid_decay_coeff = trainer._effective_monotonic_coeff()
         trainer.updates_completed = 999
         final_coeff = trainer._effective_monotonic_coeff()
 
-        self.assertAlmostEqual(early_coeff, 3e-3, places=8)
-        self.assertAlmostEqual(pre_decay_coeff, 3e-3, places=8)
+        self.assertAlmostEqual(early_coeff, 1e-3, places=8)
+        self.assertAlmostEqual(pre_decay_coeff, 1e-3, places=8)
         self.assertLess(mid_decay_coeff, pre_decay_coeff)
-        self.assertAlmostEqual(final_coeff, 0.0, places=8)
+        self.assertAlmostEqual(final_coeff, 5e-4, places=8)
 
     def test_dynamic_env_exposes_taskwise_delay_gap_proxies(self) -> None:
         config = EnvironmentConfig(num_agents=5, episode_length=2, graph_type="star")

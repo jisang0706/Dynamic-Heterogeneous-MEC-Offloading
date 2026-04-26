@@ -190,15 +190,15 @@ class TrainingConfig:
     learning_rate: float = 2e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
-    ppo_clip: float = 0.10
+    ppo_clip: float = 0.07
     entropy_coeff: float = 0.002
     local_reward_weight: float = 0.6
     l_i_coeff: float = 5e-5
     l_i_warmup_updates: int = 100
     l_d_coeff: float = 1e-3
-    monotonic_offloading_coeff: float = 3e-3
-    monotonic_offloading_coeff_final: float = 0.0
-    monotonic_decay_start_fraction: float = 0.4
+    monotonic_offloading_coeff: float = 1e-3
+    monotonic_offloading_coeff_final: float = 5e-4
+    monotonic_decay_start_fraction: float = 0.6
     monotonic_decay_end_fraction: float = 1.0
     monotonic_load_margin: float = 0.1
     monotonic_offload_margin: float = 0.0
@@ -278,15 +278,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume-from", type=Path, default=None)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
-    parser.add_argument("--ppo-clip", type=float, default=0.10)
+    parser.add_argument("--ppo-clip", type=float, default=0.07)
     parser.add_argument("--entropy-coeff", type=float, default=0.002)
     parser.add_argument("--local-reward-weight", type=float, default=0.6)
     parser.add_argument("--l-i-coeff", type=float, default=5e-5)
     parser.add_argument("--l-i-warmup-updates", type=int, default=100)
     parser.add_argument("--l-d-coeff", type=float, default=1e-3)
-    parser.add_argument("--monotonic-offloading-coeff", type=float, default=3e-3)
-    parser.add_argument("--monotonic-offloading-coeff-final", type=float, default=0.0)
-    parser.add_argument("--monotonic-decay-start-fraction", type=float, default=0.4)
+    parser.add_argument("--monotonic-offloading-coeff", type=float, default=1e-3)
+    parser.add_argument("--monotonic-offloading-coeff-final", type=float, default=5e-4)
+    parser.add_argument("--monotonic-decay-start-fraction", type=float, default=0.6)
     parser.add_argument("--monotonic-decay-end-fraction", type=float, default=1.0)
     parser.add_argument("--monotonic-load-margin", type=float, default=0.1)
     parser.add_argument("--monotonic-offload-margin", type=float, default=0.0)
