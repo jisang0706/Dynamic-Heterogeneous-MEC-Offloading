@@ -66,6 +66,29 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         self.assertEqual(tuple(individual_mean.shape), (4, 5, 4))
         self.assertEqual(tuple(individual_std.shape), (4, 5, 4))
 
+    def test_state_dependent_std_actor_can_change_std_across_observations(self) -> None:
+        actor = MultiAgentRoleConditionedActor(
+            num_agents=3,
+            actor_type="individual",
+            obs_dim=16,
+            role_dim=3,
+            action_dim=4,
+            hidden_dim=64,
+            use_role=True,
+            use_state_dependent_std=True,
+        )
+        obs_a = torch.zeros(3, 16)
+        obs_b = torch.ones(3, 16)
+        role_mu = torch.zeros(3, 3)
+        assert actor.actors is not None
+        with torch.no_grad():
+            actor.actors[0].std_head.weight[0, 0] = 0.5
+
+        _, std_a = actor(obs_a, role_mu)
+        _, std_b = actor(obs_b, role_mu)
+
+        self.assertNotAlmostEqual(float(std_a[0, 0].item()), float(std_b[0, 0].item()), places=6)
+
     def test_shared_actor_can_differentiate_agents_with_identity_conditioning(self) -> None:
         actor = MultiAgentRoleConditionedActor(
             num_agents=5,

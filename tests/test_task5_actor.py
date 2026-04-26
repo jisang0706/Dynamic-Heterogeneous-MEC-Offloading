@@ -76,6 +76,30 @@ class Task5ActorTests(unittest.TestCase):
         self.assertEqual(tuple(env_action.shape), (4, 4))
         self.assertEqual(tuple(log_prob.shape), (4,))
 
+    def test_state_dependent_std_can_vary_with_observation(self) -> None:
+        actor = RoleConditionedActor(
+            obs_dim=16,
+            role_dim=3,
+            action_dim=4,
+            hidden_dim=64,
+            use_role=True,
+            use_state_dependent_std=True,
+            initial_action_std_env=0.20,
+        )
+        obs_a = torch.zeros(2, 16)
+        obs_b = torch.ones(2, 16)
+        role_mu = torch.zeros(2, 3)
+        assert actor.std_head is not None
+        with torch.no_grad():
+            actor.std_head.weight[0, 0] = 0.5
+
+        _, std_a = actor(obs_a, role_mu)
+        _, std_b = actor(obs_b, role_mu)
+
+        self.assertEqual(tuple(std_a.shape), (2, 4))
+        self.assertTrue(torch.all(std_a > 0.0))
+        self.assertNotAlmostEqual(float(std_a[0, 0].item()), float(std_b[0, 0].item()), places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

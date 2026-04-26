@@ -173,6 +173,7 @@ class IPPOTrainer:
             action_dim=config.model.action_dim,
             hidden_dim=config.model.actor_hidden_dim,
             use_role=False,
+            use_state_dependent_std=config.model.use_state_dependent_std,
             initial_action_std_env=config.model.initial_action_std_env,
             initial_offloading_mean_env=config.model.initial_offloading_mean_env,
             initial_power_mean_env=config.model.initial_power_mean_env,

@@ -168,6 +168,7 @@ class ModelConfig:
     use_role: bool = True
     use_l_i: bool = True
     use_l_d_simple: bool = False
+    use_state_dependent_std: bool = False
     actor_type: str = "shared"
     role_dim: int = 3
     actor_hidden_dim: int = 128
@@ -263,6 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-role", type=_str_to_bool, default=True)
     parser.add_argument("--use-l-i", type=_str_to_bool, default=True)
     parser.add_argument("--use-l-d-simple", type=_str_to_bool, default=False)
+    parser.add_argument("--use-state-dependent-std", type=_str_to_bool, default=False)
     parser.add_argument("--actor-type", choices=("shared", "individual"), default="shared")
     parser.add_argument("--role-dim", type=int, default=3)
     parser.add_argument("--actor-hidden-dim", type=int, default=128)
@@ -333,6 +335,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         use_role=args.use_role,
         use_l_i=args.use_l_i,
         use_l_d_simple=args.use_l_d_simple,
+        use_state_dependent_std=args.use_state_dependent_std,
         actor_type=args.actor_type,
         role_dim=args.role_dim,
         actor_hidden_dim=args.actor_hidden_dim,

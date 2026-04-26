@@ -27,6 +27,8 @@ class Task7BaselineTests(unittest.TestCase):
 
         b3_config, b3_variant = apply_experiment_variant(config, "B3")
         a4_config, a4_variant = apply_experiment_variant(config, "A4")
+        a10_config, a10_variant = apply_experiment_variant(config, "A10_SDSTD")
+        a11_config, a11_variant = apply_experiment_variant(config, "A11_NOROLE_SDSTD")
 
         self.assertIsNotNone(b3_variant)
         self.assertEqual(b3_config.model.critic_type, "pgcn")
@@ -38,6 +40,15 @@ class Task7BaselineTests(unittest.TestCase):
         self.assertTrue(a4_config.model.use_role)
         self.assertTrue(a4_config.model.use_l_i)
         self.assertEqual(a4_config.model.actor_type, "individual")
+
+        self.assertIsNotNone(a10_variant)
+        self.assertTrue(a10_config.model.use_state_dependent_std)
+        self.assertTrue(a10_config.model.use_role)
+        self.assertGreaterEqual(a10_config.model.initial_action_std_env, 0.20)
+
+        self.assertIsNotNone(a11_variant)
+        self.assertTrue(a11_config.model.use_state_dependent_std)
+        self.assertFalse(a11_config.model.use_role)
 
     def test_fixed_policy_baseline_returns_summary(self) -> None:
         config = ExperimentConfig(

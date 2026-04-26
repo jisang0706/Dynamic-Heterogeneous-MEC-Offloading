@@ -17,12 +17,14 @@ class RoleConditionedActor(nn.Module):
         action_dim: int = 4,
         hidden_dim: int = 128,
         use_role: bool = True,
+        use_state_dependent_std: bool = False,
         initial_action_std_env: float = 0.25,
         initial_offloading_mean_env: float = 0.65,
         initial_power_mean_env: float = 0.8,
     ) -> None:
         super().__init__()
         self.use_role = use_role
+        self.use_state_dependent_std = use_state_dependent_std
         self.action_dim = action_dim
         self.role_dim = role_dim
         if initial_action_std_env <= 0.0:
@@ -38,11 +40,19 @@ class RoleConditionedActor(nn.Module):
         self.fc3 = orthogonal_init(nn.Linear(hidden_dim, action_dim), gain=0.01)
         self.tanh = nn.Tanh()
         native_std = max(initial_action_std_env * 10.0, 1e-4)
-        self.log_std = nn.Parameter(torch.full((action_dim,), math.log(native_std), dtype=torch.float32))
+        if use_state_dependent_std:
+            self.log_std = None
+            self.std_head = nn.Linear(hidden_dim, action_dim)
+        else:
+            self.log_std = nn.Parameter(torch.full((action_dim,), math.log(native_std), dtype=torch.float32))
+            self.std_head = None
         with torch.no_grad():
             self.fc3.bias.zero_()
             self.fc3.bias[:-1] = self._env_mean_to_native_bias(initial_offloading_mean_env)
             self.fc3.bias[-1] = self._env_mean_to_native_bias(initial_power_mean_env)
+            if self.std_head is not None:
+                self.std_head.weight.zero_()
+                self.std_head.bias.fill_(math.log(native_std))
 
     @staticmethod
     def _env_mean_to_native_bias(env_mean: float) -> float:
@@ -64,7 +74,12 @@ class RoleConditionedActor(nn.Module):
         hidden = self.tanh(self.fc1(self._prepare_inputs(obs, role_mu)))
         hidden = self.tanh(self.fc2(hidden))
         mean = self.tanh(self.fc3(hidden)) * 5.0 + 5.0
-        std = self.log_std.exp().expand_as(mean)
+        if self.std_head is None:
+            assert self.log_std is not None
+            std = self.log_std.exp().expand_as(mean)
+        else:
+            log_std = self.std_head(hidden).clamp(-4.0, 0.5)
+            std = log_std.exp()
         return mean, std
 
     def distribution(self, obs: torch.Tensor, role_mu: torch.Tensor | None = None) -> Normal:
@@ -108,6 +123,7 @@ class MultiAgentRoleConditionedActor(nn.Module):
         action_dim: int = 4,
         hidden_dim: int = 128,
         use_role: bool = True,
+        use_state_dependent_std: bool = False,
         global_context_dim: int = 8,
         context_pooling: str = "mean",
         initial_action_std_env: float = 0.25,
@@ -144,6 +160,7 @@ class MultiAgentRoleConditionedActor(nn.Module):
                 action_dim=action_dim,
                 hidden_dim=hidden_dim,
                 use_role=use_role,
+                use_state_dependent_std=use_state_dependent_std,
                 initial_action_std_env=initial_action_std_env,
                 initial_offloading_mean_env=initial_offloading_mean_env,
                 initial_power_mean_env=initial_power_mean_env,
@@ -159,6 +176,7 @@ class MultiAgentRoleConditionedActor(nn.Module):
                         action_dim=action_dim,
                         hidden_dim=hidden_dim,
                         use_role=use_role,
+                        use_state_dependent_std=use_state_dependent_std,
                         initial_action_std_env=initial_action_std_env,
                         initial_offloading_mean_env=initial_offloading_mean_env,
                         initial_power_mean_env=initial_power_mean_env,

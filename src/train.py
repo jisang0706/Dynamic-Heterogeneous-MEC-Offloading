@@ -184,6 +184,7 @@ class PPOTrainer:
             action_dim=config.model.action_dim,
             hidden_dim=config.model.actor_hidden_dim,
             use_role=config.model.use_role,
+            use_state_dependent_std=config.model.use_state_dependent_std,
             global_context_dim=config.model.actor_global_context_dim,
             context_pooling=config.model.actor_context_pooling,
             initial_action_std_env=config.model.initial_action_std_env,
@@ -606,9 +607,18 @@ class PPOTrainer:
     def _policy_log_std_mean_per_dim(self) -> list[float]:
         if self.actor.actor_type == "shared":
             assert self.actor.shared_actor is not None
-            return self.actor.shared_actor.log_std.detach().cpu().tolist()
+            if self.actor.shared_actor.log_std is not None:
+                return self.actor.shared_actor.log_std.detach().cpu().tolist()
+            assert self.actor.shared_actor.std_head is not None
+            return self.actor.shared_actor.std_head.bias.detach().cpu().tolist()
         assert self.actor.actors is not None
-        stacked = self.torch.stack([module.log_std.detach() for module in self.actor.actors], dim=0)
+        stacked = self.torch.stack(
+            [
+                module.log_std.detach() if module.log_std is not None else module.std_head.bias.detach()
+                for module in self.actor.actors
+            ],
+            dim=0,
+        )
         return stacked.mean(dim=0).cpu().tolist()
 
     def collect_rollouts(

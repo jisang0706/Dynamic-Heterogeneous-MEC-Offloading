@@ -40,6 +40,8 @@ VARIANT_REGISTRY: dict[str, ExperimentVariant] = {
     "A7_200": ExperimentVariant("A7_200", "Threshold 200", "ablation", "ppo", "A4 with distance threshold 200m."),
     "A8": ExperimentVariant("A8", "Simple L_D", "ablation", "ppo", "Full model plus simple diversity loss."),
     "A9_NOROLE": ExperimentVariant("A9_NOROLE", "No Role", "ablation", "ppo", "A1 backbone with individual actors and P-GCN critic, but no role conditioning."),
+    "A10_SDSTD": ExperimentVariant("A10_SDSTD", "State-Dependent Std", "ablation", "ppo", "A1 backbone with state-dependent exploration std."),
+    "A11_NOROLE_SDSTD": ExperimentVariant("A11_NOROLE_SDSTD", "No Role + State-Dependent Std", "ablation", "ppo", "A9 backbone with state-dependent exploration std."),
 }
 
 
@@ -133,6 +135,39 @@ def apply_experiment_variant(config: ExperimentConfig, variant_id: str | None) -
             use_role=False,
             use_l_i=False,
             use_l_d_simple=False,
+            initial_offloading_mean_env=min(model.initial_offloading_mean_env, 0.68),
+            initial_power_mean_env=min(model.initial_power_mean_env, 0.78),
+        )
+        environment = replace(environment, graph_type="star", use_mobility=True, use_cpu_dynamics=True)
+    elif variant.variant_id == "A10_SDSTD":
+        model = replace(
+            model,
+            critic_type="pgcn",
+            actor_type="individual",
+            use_role=True,
+            use_l_i=True,
+            use_l_d_simple=False,
+            use_state_dependent_std=True,
+            initial_action_std_env=max(model.initial_action_std_env, 0.20),
+            initial_offloading_mean_env=min(model.initial_offloading_mean_env, 0.68),
+            initial_power_mean_env=min(model.initial_power_mean_env, 0.78),
+        )
+        training = replace(
+            training,
+            l_i_coeff=min(training.l_i_coeff, 2e-5),
+            l_i_warmup_updates=max(training.l_i_warmup_updates, 250),
+        )
+        environment = replace(environment, graph_type="star", use_mobility=True, use_cpu_dynamics=True)
+    elif variant.variant_id == "A11_NOROLE_SDSTD":
+        model = replace(
+            model,
+            critic_type="pgcn",
+            actor_type="individual",
+            use_role=False,
+            use_l_i=False,
+            use_l_d_simple=False,
+            use_state_dependent_std=True,
+            initial_action_std_env=max(model.initial_action_std_env, 0.20),
             initial_offloading_mean_env=min(model.initial_offloading_mean_env, 0.68),
             initial_power_mean_env=min(model.initial_power_mean_env, 0.78),
         )
