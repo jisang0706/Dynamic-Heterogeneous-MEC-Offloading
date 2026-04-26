@@ -17,11 +17,15 @@ class PaperRunTests(unittest.TestCase):
             args = paper_run.build_parser().parse_args(["--workspace-root", tmp_dir])
 
         self.assertEqual(args.learning_rate, 2e-4)
-        self.assertEqual(args.ppo_clip, 0.05)
+        self.assertEqual(args.ppo_clip, 0.10)
         self.assertEqual(args.entropy_coeff, 2e-3)
         self.assertEqual(args.local_reward_weight, 0.6)
         self.assertEqual(args.l_i_coeff, 5e-5)
         self.assertEqual(args.l_i_warmup_updates, 100)
+        self.assertEqual(args.monotonic_offloading_coeff, 3e-3)
+        self.assertEqual(args.monotonic_offloading_coeff_final, 0.0)
+        self.assertEqual(args.monotonic_decay_start_fraction, 0.4)
+        self.assertEqual(args.monotonic_decay_end_fraction, 1.0)
         self.assertEqual(args.delay_mode, "bestcase_slack")
         self.assertEqual(args.gradient_clip, 1.0)
         self.assertEqual(args.initial_action_std_env, 0.15)
@@ -33,7 +37,7 @@ class PaperRunTests(unittest.TestCase):
         self.assertEqual(args.resource_scaling_mode, "linear_after_threshold")
         self.assertEqual(args.resource_scaling_base_agents, 5)
         self.assertEqual(args.resource_scaling_start_agents, 10)
-        self.assertEqual(args.checkpoint_selection_mode, "milestone_best")
+        self.assertEqual(args.checkpoint_selection_mode, "final_only")
 
     def test_scale_profile_keeps_m5_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

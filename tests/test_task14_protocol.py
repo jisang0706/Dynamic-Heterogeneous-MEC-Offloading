@@ -22,6 +22,7 @@ class Task14ProtocolTests(unittest.TestCase):
         self.assertIsNotNone(core)
         self.assertEqual(core.recommended_num_agents, (5, 10))
         self.assertEqual(core.recommended_seed_count, (3, 3))
+        self.assertIn("A9_NOROLE", core.recommended_methods)
 
         self.assertIsNotNone(scale)
         self.assertEqual(scale.recommended_num_agents, (15, 20))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
@@ -32,6 +33,7 @@ class TrainingUpdateSummary:
     entropy: float
     l_i_loss: float | None = None
     effective_l_i_coeff: float | None = None
+    effective_monotonic_coeff: float | None = None
     monotonic_loss: float | None = None
     l_var_loss: float | None = None
     role_mu_var_per_dim: list[float] | None = None
@@ -367,6 +369,28 @@ class PPOTrainer:
         progress = min(1.0, float(self.updates_completed + 1) / float(warmup_updates))
         return float(self.config.training.l_i_coeff) * progress
 
+    def _effective_monotonic_coeff(self) -> float:
+        initial_coeff = float(self.config.training.monotonic_offloading_coeff)
+        final_coeff = float(self.config.training.monotonic_offloading_coeff_final)
+        if initial_coeff <= 0.0 and final_coeff <= 0.0:
+            return 0.0
+
+        start_fraction = min(max(float(self.config.training.monotonic_decay_start_fraction), 0.0), 1.0)
+        end_fraction = min(max(float(self.config.training.monotonic_decay_end_fraction), start_fraction), 1.0)
+        total_updates = max(
+            1,
+            int(math.ceil(float(self.config.training.total_episodes) / float(self.config.training.update_every_episodes))),
+        )
+        progress = min(1.0, float(self.updates_completed + 1) / float(total_updates))
+        if progress <= start_fraction:
+            return initial_coeff
+        if progress >= end_fraction:
+            return final_coeff
+        if end_fraction <= start_fraction:
+            return final_coeff
+        alpha = (progress - start_fraction) / (end_fraction - start_fraction)
+        return initial_coeff + alpha * (final_coeff - initial_coeff)
+
     def _load_training_checkpoint(self, checkpoint_path: Path) -> None:
         checkpoint = self._torch_load_checkpoint(checkpoint_path)
         self.actor.load_state_dict(checkpoint["actor"])
@@ -441,6 +465,7 @@ class PPOTrainer:
             "entropy": summary.entropy,
             "l_i_loss": summary.l_i_loss,
             "effective_l_i_coeff": summary.effective_l_i_coeff,
+            "effective_monotonic_coeff": summary.effective_monotonic_coeff,
             "monotonic_loss": summary.monotonic_loss,
             "l_var_loss": summary.l_var_loss,
             "role_mu_var_per_dim": summary.role_mu_var_per_dim,
@@ -529,8 +554,13 @@ class PPOTrainer:
             traj_std=traj_sigma,
         )
 
-    def _compute_monotonic_offloading_loss(self, taskwise_delay_gap: Any, policy_mean_native: Any) -> Any:
-        if self.config.training.monotonic_offloading_coeff <= 0.0:
+    def _compute_monotonic_offloading_loss(
+        self,
+        taskwise_delay_gap: Any,
+        policy_mean_native: Any,
+        effective_monotonic_coeff: float,
+    ) -> Any:
+        if effective_monotonic_coeff <= 0.0:
             return policy_mean_native.new_tensor(0.0)
 
         if taskwise_delay_gap.dim() == 2:
@@ -722,6 +752,7 @@ class PPOTrainer:
         role_sigma_mean_history: list[Any] = []
         near_zero_sigma_history: list[float] = []
         effective_l_i_coeff = self._effective_l_i_coeff()
+        effective_monotonic_coeff = self._effective_monotonic_coeff()
 
         for _ in range(self.config.training.ppo_epochs):
             permutation = self.torch.randperm(num_steps, device=self.device)
@@ -772,14 +803,18 @@ class PPOTrainer:
                 if self.config.model.use_role and self.config.model.use_l_d_simple:
                     flat_role_mu = role_mu.reshape(-1, role_mu.shape[-1])
                     l_d_loss = self.role_diversity_loss(flat_role_mu)
-                monotonic_loss = self._compute_monotonic_offloading_loss(taskwise_delay_gap, policy_mean_native)
+                monotonic_loss = self._compute_monotonic_offloading_loss(
+                    taskwise_delay_gap,
+                    policy_mean_native,
+                    effective_monotonic_coeff,
+                )
                 monotonic_losses.append(float(monotonic_loss.item()))
 
                 actor_loss = (
                     policy_loss
                     - self.config.training.entropy_coeff * entropy_bonus
                     + effective_l_i_coeff * l_i_loss
-                    + self.config.training.monotonic_offloading_coeff * monotonic_loss
+                    + effective_monotonic_coeff * monotonic_loss
                     + self.config.training.lambda_var * l_var_loss
                     + self.config.training.l_d_coeff * l_d_loss
                 )
@@ -832,6 +867,7 @@ class PPOTrainer:
             entropy=sum(entropies) / max(len(entropies), 1),
             l_i_loss=(sum(l_i_losses) / len(l_i_losses)) if l_i_losses else None,
             effective_l_i_coeff=effective_l_i_coeff if self.config.model.use_l_i else None,
+            effective_monotonic_coeff=effective_monotonic_coeff,
             monotonic_loss=(sum(monotonic_losses) / len(monotonic_losses)) if monotonic_losses else None,
             l_var_loss=(sum(l_var_losses) / len(l_var_losses)) if l_var_losses else None,
             role_mu_var_per_dim=(

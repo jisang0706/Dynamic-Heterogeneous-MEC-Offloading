@@ -188,6 +188,37 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         self.assertGreater(float(violating_loss.item()), 0.0)
         self.assertAlmostEqual(float(monotone_loss.item()), 0.0, places=6)
 
+    def test_effective_monotonic_coeff_decays_late_in_training(self) -> None:
+        config = ExperimentConfig(
+            seed=19,
+            environment=EnvironmentConfig(num_agents=5, episode_length=2, graph_type="star"),
+            model=ModelConfig(critic_type="mlp", use_role=False, use_l_i=False, actor_type="shared"),
+            training=TrainingConfig(
+                run_mode="train",
+                total_episodes=4000,
+                update_every_episodes=4,
+                monotonic_offloading_coeff=3e-3,
+                monotonic_offloading_coeff_final=0.0,
+                monotonic_decay_start_fraction=0.4,
+                monotonic_decay_end_fraction=1.0,
+            ),
+        )
+        trainer = PPOTrainer(config)
+
+        trainer.updates_completed = 0
+        early_coeff = trainer._effective_monotonic_coeff()
+        trainer.updates_completed = 399
+        pre_decay_coeff = trainer._effective_monotonic_coeff()
+        trainer.updates_completed = 699
+        mid_decay_coeff = trainer._effective_monotonic_coeff()
+        trainer.updates_completed = 999
+        final_coeff = trainer._effective_monotonic_coeff()
+
+        self.assertAlmostEqual(early_coeff, 3e-3, places=8)
+        self.assertAlmostEqual(pre_decay_coeff, 3e-3, places=8)
+        self.assertLess(mid_decay_coeff, pre_decay_coeff)
+        self.assertAlmostEqual(final_coeff, 0.0, places=8)
+
     def test_dynamic_env_exposes_taskwise_delay_gap_proxies(self) -> None:
         config = EnvironmentConfig(num_agents=5, episode_length=2, graph_type="star")
         trainer = PPOTrainer(
@@ -319,6 +350,7 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         self.assertTrue(np.isfinite(update.entropy))
         self.assertTrue(update.l_i_loss is None or np.isfinite(update.l_i_loss))
         self.assertTrue(update.effective_l_i_coeff is None or np.isfinite(update.effective_l_i_coeff))
+        self.assertTrue(update.effective_monotonic_coeff is None or np.isfinite(update.effective_monotonic_coeff))
         self.assertTrue(update.l_var_loss is None or np.isfinite(update.l_var_loss))
         if update.role_mu_var_per_dim is not None:
             self.assertEqual(len(update.role_mu_var_per_dim), 3)

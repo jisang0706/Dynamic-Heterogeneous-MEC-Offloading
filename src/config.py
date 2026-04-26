@@ -53,7 +53,7 @@ PROTOCOL_STAGE_REGISTRY: dict[str, ProtocolStageSpec] = {
         recommended_num_agents=(5, 10),
         recommended_seed_count=(3, 3),
         recommended_episodes="full_training_budget",
-        recommended_methods=("B1", "B2", "B3", "B4", "B5", "B6", "A1", "A2", "A6A", "A6B", "QAG"),
+        recommended_methods=("B1", "B2", "B3", "B4", "B5", "B6", "A1", "A2", "A6A", "A6B", "A9_NOROLE", "QAG"),
     ),
     "scale": ProtocolStageSpec(
         stage_id="scale",
@@ -190,13 +190,16 @@ class TrainingConfig:
     learning_rate: float = 2e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
-    ppo_clip: float = 0.05
+    ppo_clip: float = 0.10
     entropy_coeff: float = 0.002
     local_reward_weight: float = 0.6
     l_i_coeff: float = 5e-5
     l_i_warmup_updates: int = 100
     l_d_coeff: float = 1e-3
-    monotonic_offloading_coeff: float = 0.0
+    monotonic_offloading_coeff: float = 3e-3
+    monotonic_offloading_coeff_final: float = 0.0
+    monotonic_decay_start_fraction: float = 0.4
+    monotonic_decay_end_fraction: float = 1.0
     monotonic_load_margin: float = 0.1
     monotonic_offload_margin: float = 0.0
     lambda_var: float = 1e-5
@@ -275,13 +278,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume-from", type=Path, default=None)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
-    parser.add_argument("--ppo-clip", type=float, default=0.05)
+    parser.add_argument("--ppo-clip", type=float, default=0.10)
     parser.add_argument("--entropy-coeff", type=float, default=0.002)
     parser.add_argument("--local-reward-weight", type=float, default=0.6)
     parser.add_argument("--l-i-coeff", type=float, default=5e-5)
     parser.add_argument("--l-i-warmup-updates", type=int, default=100)
     parser.add_argument("--l-d-coeff", type=float, default=1e-3)
-    parser.add_argument("--monotonic-offloading-coeff", type=float, default=1e-2)
+    parser.add_argument("--monotonic-offloading-coeff", type=float, default=3e-3)
+    parser.add_argument("--monotonic-offloading-coeff-final", type=float, default=0.0)
+    parser.add_argument("--monotonic-decay-start-fraction", type=float, default=0.4)
+    parser.add_argument("--monotonic-decay-end-fraction", type=float, default=1.0)
     parser.add_argument("--monotonic-load-margin", type=float, default=0.1)
     parser.add_argument("--monotonic-offload-margin", type=float, default=0.0)
     parser.add_argument("--lambda-var", type=float, default=1e-5)
@@ -350,6 +356,9 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         l_i_warmup_updates=args.l_i_warmup_updates,
         l_d_coeff=args.l_d_coeff,
         monotonic_offloading_coeff=args.monotonic_offloading_coeff,
+        monotonic_offloading_coeff_final=args.monotonic_offloading_coeff_final,
+        monotonic_decay_start_fraction=args.monotonic_decay_start_fraction,
+        monotonic_decay_end_fraction=args.monotonic_decay_end_fraction,
         monotonic_load_margin=args.monotonic_load_margin,
         monotonic_offload_margin=args.monotonic_offload_margin,
         lambda_var=args.lambda_var,
@@ -387,6 +396,13 @@ def build_config_from_dict(payload: dict[str, Any]) -> ExperimentConfig:
         model_payload["actor_context_pooling"] = "mean"
     if "use_delay_aware_actor_features" not in environment_payload:
         environment_payload["use_delay_aware_actor_features"] = False
+    if "monotonic_offloading_coeff_final" not in training_payload:
+        legacy_monotonic = float(training_payload.get("monotonic_offloading_coeff", TrainingConfig.monotonic_offloading_coeff))
+        training_payload["monotonic_offloading_coeff_final"] = legacy_monotonic
+    if "monotonic_decay_start_fraction" not in training_payload:
+        training_payload["monotonic_decay_start_fraction"] = 1.0
+    if "monotonic_decay_end_fraction" not in training_payload:
+        training_payload["monotonic_decay_end_fraction"] = 1.0
 
     for key in ("task_size_range_mb", "task_density_range_gcycles_per_mb", "task_deadline_range_s"):
         if key in environment_payload:

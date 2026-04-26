@@ -87,12 +87,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=800)
     parser.add_argument("--ppo-epochs", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
-    parser.add_argument("--ppo-clip", type=float, default=0.05)
+    parser.add_argument("--ppo-clip", type=float, default=0.10)
     parser.add_argument("--entropy-coeff", type=float, default=2e-3)
     parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument("--local-reward-weight", type=float, default=0.6)
     parser.add_argument("--l-i-coeff", type=float, default=5e-5)
     parser.add_argument("--l-i-warmup-updates", type=int, default=100)
+    parser.add_argument("--monotonic-offloading-coeff", type=float, default=3e-3)
+    parser.add_argument("--monotonic-offloading-coeff-final", type=float, default=0.0)
+    parser.add_argument("--monotonic-decay-start-fraction", type=float, default=0.4)
+    parser.add_argument("--monotonic-decay-end-fraction", type=float, default=1.0)
     parser.add_argument("--lambda-var", type=float, default=1e-5)
     parser.add_argument("--sigma-floor", type=float, default=0.05)
     parser.add_argument("--initial-action-std-env", type=float, default=0.15)
@@ -109,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resource-scaling-base-agents", type=int, default=5)
     parser.add_argument("--resource-scaling-start-agents", type=int, default=10)
     parser.add_argument("--save-every-episodes", type=int, default=100)
-    parser.add_argument("--checkpoint-selection-mode", choices=("final_only", "milestone_best"), default="milestone_best")
+    parser.add_argument("--checkpoint-selection-mode", choices=("final_only", "milestone_best"), default="final_only")
     parser.add_argument("--checkpoint-milestones", nargs="*", type=int, default=None)
     parser.add_argument("--skip-visualize", action="store_true")
     parser.add_argument("--force-train", action="store_true")
@@ -449,6 +453,14 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
         str(args.l_i_coeff),
         "--l-i-warmup-updates",
         str(args.l_i_warmup_updates),
+        "--monotonic-offloading-coeff",
+        str(args.monotonic_offloading_coeff),
+        "--monotonic-offloading-coeff-final",
+        str(args.monotonic_offloading_coeff_final),
+        "--monotonic-decay-start-fraction",
+        str(args.monotonic_decay_start_fraction),
+        "--monotonic-decay-end-fraction",
+        str(args.monotonic_decay_end_fraction),
         "--lambda-var",
         str(args.lambda_var),
         "--sigma-floor",
