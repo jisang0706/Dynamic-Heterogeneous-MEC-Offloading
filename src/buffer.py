@@ -25,6 +25,7 @@ class Transition:
     scaled_joint_reward: float | None = None
     value: np.ndarray | float | None = None
     timeout_ratio: float | None = None
+    taskwise_delay_gap: np.ndarray | None = None
 
     @property
     def device_obs(self) -> np.ndarray:
@@ -226,6 +227,7 @@ class RolloutBuffer:
             ),
             "value": np.stack([self._value(item) for item in self.transitions]).astype(np.float32),
             "timeout_ratio": np.asarray([self._timeout_ratio(item) for item in self.transitions], dtype=np.float32),
+            "taskwise_delay_gap": np.stack([self._taskwise_delay_gap(item) for item in self.transitions]).astype(np.float32),
             "done": np.asarray([item.done for item in self.transitions], dtype=np.float32),
         }
         return {key: torch.as_tensor(value, dtype=torch.float32, device=device) for key, value in stacked.items()}
@@ -284,3 +286,11 @@ class RolloutBuffer:
         if transition.positions is None:
             return np.zeros(position_shape, dtype=np.float32)
         return np.asarray(transition.positions, dtype=np.float32)
+
+    @staticmethod
+    def _taskwise_delay_gap(transition: Transition) -> np.ndarray:
+        if transition.taskwise_delay_gap is None:
+            reward = np.asarray(transition.reward, dtype=np.float32)
+            task_count = max(int(np.asarray(transition.action, dtype=np.float32).shape[-1]) - 1, 0)
+            return np.zeros((reward.shape[0], task_count), dtype=np.float32)
+        return np.asarray(transition.taskwise_delay_gap, dtype=np.float32)

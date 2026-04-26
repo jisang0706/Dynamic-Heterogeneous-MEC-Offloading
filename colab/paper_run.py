@@ -63,6 +63,7 @@ class RunSpec:
 
 @dataclass(frozen=True, slots=True)
 class ScaleRunProfile:
+    profile_id: str
     resource_scaling_mode: str
     total_bandwidth_hz: float
     server_cpu_ghz: float
@@ -97,7 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--initial-action-std-env", type=float, default=0.15)
     parser.add_argument("--initial-offloading-mean-env", type=float, default=0.70)
     parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
-    parser.add_argument("--large-scale-profile", choices=("default", "paper_scale_v1", "paper_scale_v2"), default="paper_scale_v2")
+    parser.add_argument(
+        "--large-scale-profile",
+        choices=("default", "matched_resource", "paper_scale_v1", "paper_scale_v2"),
+        default="paper_scale_v2",
+    )
     parser.add_argument("--use-obs-scaling", choices=("true", "false"), default="true")
     parser.add_argument("--use-reward-scaling", choices=("true", "false"), default="true")
     parser.add_argument("--resource-scaling-mode", choices=("fixed", "linear_after_threshold"), default="linear_after_threshold")
@@ -137,6 +142,7 @@ def resolve_scale_run_profile(spec: RunSpec, args: argparse.Namespace) -> ScaleR
     # Keep the environment definition shared across methods and only use mild
     # profile tuning to avoid the worst timeout-saturation regime at larger M.
     base_profile = ScaleRunProfile(
+        profile_id="matched_resource" if args.large_scale_profile == "matched_resource" else "default",
         resource_scaling_mode=args.resource_scaling_mode,
         total_bandwidth_hz=10e6,
         server_cpu_ghz=25.0,
@@ -144,21 +150,21 @@ def resolve_scale_run_profile(spec: RunSpec, args: argparse.Namespace) -> ScaleR
         initial_offloading_mean_env=args.initial_offloading_mean_env,
         initial_power_mean_env=args.initial_power_mean_env,
     )
-    if args.large_scale_profile == "default":
+    if args.large_scale_profile in {"default", "matched_resource"}:
         return base_profile
 
     if args.large_scale_profile == "paper_scale_v1":
         tuned_profiles = {
-            10: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=20e6, server_cpu_ghz=60.0, u_slack=2.2, initial_offloading_mean_env=0.60, initial_power_mean_env=args.initial_power_mean_env),
-            15: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=30e6, server_cpu_ghz=90.0, u_slack=2.4, initial_offloading_mean_env=0.58, initial_power_mean_env=args.initial_power_mean_env),
-            20: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=40e6, server_cpu_ghz=120.0, u_slack=2.6, initial_offloading_mean_env=0.55, initial_power_mean_env=args.initial_power_mean_env),
+            10: ScaleRunProfile(profile_id="paper_scale_v1", resource_scaling_mode="fixed", total_bandwidth_hz=20e6, server_cpu_ghz=60.0, u_slack=2.2, initial_offloading_mean_env=0.60, initial_power_mean_env=args.initial_power_mean_env),
+            15: ScaleRunProfile(profile_id="paper_scale_v1", resource_scaling_mode="fixed", total_bandwidth_hz=30e6, server_cpu_ghz=90.0, u_slack=2.4, initial_offloading_mean_env=0.58, initial_power_mean_env=args.initial_power_mean_env),
+            20: ScaleRunProfile(profile_id="paper_scale_v1", resource_scaling_mode="fixed", total_bandwidth_hz=40e6, server_cpu_ghz=120.0, u_slack=2.6, initial_offloading_mean_env=0.55, initial_power_mean_env=args.initial_power_mean_env),
         }
         return tuned_profiles.get(spec.num_agents, base_profile)
 
     tuned_profiles = {
-        10: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=20e6, server_cpu_ghz=70.0, u_slack=2.4, initial_offloading_mean_env=0.55, initial_power_mean_env=0.90),
-        15: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=30e6, server_cpu_ghz=105.0, u_slack=2.6, initial_offloading_mean_env=0.52, initial_power_mean_env=0.92),
-        20: ScaleRunProfile(resource_scaling_mode="fixed", total_bandwidth_hz=40e6, server_cpu_ghz=140.0, u_slack=2.8, initial_offloading_mean_env=0.50, initial_power_mean_env=0.95),
+        10: ScaleRunProfile(profile_id="paper_scale_v2", resource_scaling_mode="fixed", total_bandwidth_hz=20e6, server_cpu_ghz=70.0, u_slack=2.4, initial_offloading_mean_env=0.55, initial_power_mean_env=0.90),
+        15: ScaleRunProfile(profile_id="paper_scale_v2", resource_scaling_mode="fixed", total_bandwidth_hz=30e6, server_cpu_ghz=105.0, u_slack=2.6, initial_offloading_mean_env=0.52, initial_power_mean_env=0.92),
+        20: ScaleRunProfile(profile_id="paper_scale_v2", resource_scaling_mode="fixed", total_bandwidth_hz=40e6, server_cpu_ghz=140.0, u_slack=2.8, initial_offloading_mean_env=0.50, initial_power_mean_env=0.95),
     }
     return tuned_profiles.get(spec.num_agents, base_profile)
 
@@ -757,6 +763,7 @@ def run_stage(stage_id: str, args: argparse.Namespace, repo_root: Path) -> None:
             f"[run] stage={spec.stage_id} variant={spec.variant_id} "
             f"m={spec.num_agents} seed={spec.seed} root={spec.output_root}"
         )
+        scale_profile = resolve_scale_run_profile(spec, args)
         checkpoint_path, checkpoint_rule, checkpoint_info = ensure_training(spec, args, repo_root)
         summary_path, selected_checkpoint_path, selected_checkpoint_rule = ensure_evaluation(
             spec,
@@ -794,6 +801,7 @@ def run_stage(stage_id: str, args: argparse.Namespace, repo_root: Path) -> None:
                 if selected_checkpoint_info is None
                 else selected_checkpoint_info.update_index,
                 "summary_path": summary_path,
+                "scale_profile": _json_ready(asdict(scale_profile)),
             }
         )
         _write_json(manifest_path, manifest)

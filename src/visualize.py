@@ -23,6 +23,7 @@ DISPLAY_NAME_MAP = {
     "A7_100": "RC-P-GCN-MAPPO (D=100)",
     "A7_200": "RC-P-GCN-MAPPO (D=200)",
     "A8": "RC-P-GCN-MAPPO (+L_D)",
+    "A9_NOROLE": "P-GCN-MAPPO (Indiv, No Role)",
     "B0": "Li et al. Exact",
     "B1": "MAPPO",
     "B2": "Shared-MLP-MAPPO",

@@ -39,6 +39,7 @@ VARIANT_REGISTRY: dict[str, ExperimentVariant] = {
     "A7_100": ExperimentVariant("A7_100", "Threshold 100", "ablation", "ppo", "A4 with distance threshold 100m."),
     "A7_200": ExperimentVariant("A7_200", "Threshold 200", "ablation", "ppo", "A4 with distance threshold 200m."),
     "A8": ExperimentVariant("A8", "Simple L_D", "ablation", "ppo", "Full model plus simple diversity loss."),
+    "A9_NOROLE": ExperimentVariant("A9_NOROLE", "No Role", "ablation", "ppo", "A1 backbone with individual actors and P-GCN critic, but no role conditioning."),
 }
 
 
@@ -124,5 +125,17 @@ def apply_experiment_variant(config: ExperimentConfig, variant_id: str | None) -
         environment = replace(environment, graph_type="star_proximity", distance_threshold_m=200.0)
     elif variant.variant_id == "A8":
         model = replace(model, critic_type="pgcn", actor_type="individual", use_role=True, use_l_i=True, use_l_d_simple=True)
+    elif variant.variant_id == "A9_NOROLE":
+        model = replace(
+            model,
+            critic_type="pgcn",
+            actor_type="individual",
+            use_role=False,
+            use_l_i=False,
+            use_l_d_simple=False,
+            initial_offloading_mean_env=min(model.initial_offloading_mean_env, 0.68),
+            initial_power_mean_env=min(model.initial_power_mean_env, 0.78),
+        )
+        environment = replace(environment, graph_type="star", use_mobility=True, use_cpu_dynamics=True)
 
     return replace(config, environment=environment, model=model, training=training), variant

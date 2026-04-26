@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from src.baselines.presets import apply_experiment_variant
 from src.buffer import RolloutBuffer, Transition
 from src.config import EnvironmentConfig, ExperimentConfig, ModelConfig, TrainingConfig
 from src.networks import MultiAgentRoleConditionedActor
@@ -130,14 +131,13 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         self.assertIsNotNone(trainer.actor_obs_scaler)
         self.assertTrue(torch.isfinite(actor_obs).all())
 
-    def test_monotonic_offloading_loss_penalizes_reverse_ordering(self) -> None:
+    def test_monotonic_offloading_loss_penalizes_reverse_ordering_taskwise(self) -> None:
         config = ExperimentConfig(
             seed=7,
             environment=EnvironmentConfig(
                 num_agents=3,
                 episode_length=2,
                 graph_type="star",
-                use_delay_aware_actor_features=True,
             ),
             model=ModelConfig(
                 critic_type="mlp",
@@ -156,23 +156,66 @@ class Task6TrainingPipelineTests(unittest.TestCase):
             ),
         )
         trainer = PPOTrainer(config)
-        actor_obs = torch.zeros(2, 3, 19, dtype=torch.float32)
-        actor_obs[:, :, 16] = torch.tensor([2.0, 1.0, 0.0], dtype=torch.float32)
+        taskwise_gap = torch.zeros(2, 3, 3, dtype=torch.float32)
+        taskwise_gap[:, :, 0] = torch.tensor([2.0, 1.0, 0.0], dtype=torch.float32)
+        taskwise_gap[:, :, 1] = torch.tensor([0.0, 2.0, 1.0], dtype=torch.float32)
+        taskwise_gap[:, :, 2] = torch.tensor([1.0, 0.0, 2.0], dtype=torch.float32)
 
         violating_policy_mean = torch.zeros(2, 3, 4, dtype=torch.float32)
-        violating_policy_mean[:, 0, :3] = 4.0
-        violating_policy_mean[:, 1, :3] = 5.0
-        violating_policy_mean[:, 2, :3] = 6.0
-        violating_loss = trainer._compute_monotonic_offloading_loss(actor_obs, violating_policy_mean)
+        violating_policy_mean[:, 0, 0] = 4.0
+        violating_policy_mean[:, 1, 0] = 5.0
+        violating_policy_mean[:, 2, 0] = 6.0
+        violating_policy_mean[:, 0, 1] = 6.0
+        violating_policy_mean[:, 1, 1] = 4.0
+        violating_policy_mean[:, 2, 1] = 5.0
+        violating_policy_mean[:, 0, 2] = 5.0
+        violating_policy_mean[:, 1, 2] = 6.0
+        violating_policy_mean[:, 2, 2] = 4.0
+        violating_loss = trainer._compute_monotonic_offloading_loss(taskwise_gap, violating_policy_mean)
 
         monotone_policy_mean = torch.zeros(2, 3, 4, dtype=torch.float32)
-        monotone_policy_mean[:, 0, :3] = 6.0
-        monotone_policy_mean[:, 1, :3] = 5.0
-        monotone_policy_mean[:, 2, :3] = 4.0
-        monotone_loss = trainer._compute_monotonic_offloading_loss(actor_obs, monotone_policy_mean)
+        monotone_policy_mean[:, 0, 0] = 6.0
+        monotone_policy_mean[:, 1, 0] = 5.0
+        monotone_policy_mean[:, 2, 0] = 4.0
+        monotone_policy_mean[:, 0, 1] = 4.0
+        monotone_policy_mean[:, 1, 1] = 6.0
+        monotone_policy_mean[:, 2, 1] = 5.0
+        monotone_policy_mean[:, 0, 2] = 5.0
+        monotone_policy_mean[:, 1, 2] = 4.0
+        monotone_policy_mean[:, 2, 2] = 6.0
+        monotone_loss = trainer._compute_monotonic_offloading_loss(taskwise_gap, monotone_policy_mean)
 
         self.assertGreater(float(violating_loss.item()), 0.0)
         self.assertAlmostEqual(float(monotone_loss.item()), 0.0, places=6)
+
+    def test_dynamic_env_exposes_taskwise_delay_gap_proxies(self) -> None:
+        config = EnvironmentConfig(num_agents=5, episode_length=2, graph_type="star")
+        trainer = PPOTrainer(
+            ExperimentConfig(
+                seed=13,
+                environment=config,
+                model=ModelConfig(critic_type="mlp", use_role=False, use_l_i=False, actor_type="shared"),
+                training=TrainingConfig(run_mode="train", total_episodes=1, update_every_episodes=1),
+            )
+        )
+        trainer.env.reset()
+
+        proxies = trainer.env.compute_taskwise_delay_proxies()
+
+        self.assertEqual(tuple(proxies["local_queue_delay_s"].shape), (5,))
+        self.assertEqual(tuple(proxies["edge_queue_delay_s"].shape), (5,))
+        self.assertEqual(tuple(proxies["taskwise_local_edge_delay_gap_s"].shape), (5, 3))
+        self.assertTrue(np.isfinite(proxies["taskwise_local_edge_delay_gap_s"]).all())
+
+    def test_a9_norole_variant_keeps_a1_backbone_without_role(self) -> None:
+        config = ExperimentConfig()
+        patched, variant = apply_experiment_variant(config, "A9_NOROLE")
+
+        self.assertIsNotNone(variant)
+        self.assertEqual(patched.model.critic_type, "pgcn")
+        self.assertEqual(patched.model.actor_type, "individual")
+        self.assertFalse(patched.model.use_role)
+        self.assertFalse(patched.model.use_l_i)
 
     def test_rollout_buffer_computes_agentwise_returns_from_stored_transitions(self) -> None:
         buffer = RolloutBuffer()

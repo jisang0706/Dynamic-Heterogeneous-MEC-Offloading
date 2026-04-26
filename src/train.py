@@ -529,30 +529,30 @@ class PPOTrainer:
             traj_std=traj_sigma,
         )
 
-    def _compute_monotonic_offloading_loss(self, actor_obs: Any, policy_mean_native: Any) -> Any:
-        if (
-            self.config.training.monotonic_offloading_coeff <= 0.0
-            or not self.config.environment.use_delay_aware_actor_features
-        ):
-            return actor_obs.new_tensor(0.0)
+    def _compute_monotonic_offloading_loss(self, taskwise_delay_gap: Any, policy_mean_native: Any) -> Any:
+        if self.config.training.monotonic_offloading_coeff <= 0.0:
+            return policy_mean_native.new_tensor(0.0)
 
-        feature_index = self.config.environment.observation_dim + self.config.environment.actor_queue_broadcast_dim
-        if actor_obs.shape[-1] <= feature_index:
-            return actor_obs.new_tensor(0.0)
+        if taskwise_delay_gap.dim() == 2:
+            taskwise_delay_gap = taskwise_delay_gap.unsqueeze(0)
 
-        local_load_proxy = actor_obs[..., feature_index]
-        mean_offloading_env = self.actor.action_to_env(policy_mean_native[..., :-1]).mean(dim=-1)
-        if local_load_proxy.dim() == 1:
-            local_load_proxy = local_load_proxy.unsqueeze(0)
-            mean_offloading_env = mean_offloading_env.unsqueeze(0)
+        taskwise_offloading_env = self.actor.action_to_env(policy_mean_native[..., :-1])
+        if taskwise_offloading_env.dim() == 2:
+            taskwise_offloading_env = taskwise_offloading_env.unsqueeze(0)
 
-        load_i = local_load_proxy.unsqueeze(-1)
-        load_j = local_load_proxy.unsqueeze(-2)
-        offload_i = mean_offloading_env.unsqueeze(-1)
-        offload_j = mean_offloading_env.unsqueeze(-2)
-        valid_pairs = load_i > (load_j + float(self.config.training.monotonic_load_margin))
+        if taskwise_delay_gap.shape != taskwise_offloading_env.shape:
+            raise ValueError(
+                "taskwise_delay_gap shape must match offloading mean shape: "
+                f"{tuple(taskwise_delay_gap.shape)} vs {tuple(taskwise_offloading_env.shape)}"
+            )
+
+        gap_i = taskwise_delay_gap.unsqueeze(2)
+        gap_j = taskwise_delay_gap.unsqueeze(1)
+        offload_i = taskwise_offloading_env.unsqueeze(2)
+        offload_j = taskwise_offloading_env.unsqueeze(1)
+        valid_pairs = gap_i > (gap_j + float(self.config.training.monotonic_load_margin))
         if not bool(valid_pairs.any()):
-            return actor_obs.new_tensor(0.0)
+            return policy_mean_native.new_tensor(0.0)
 
         violation = self.torch.relu(
             offload_j - offload_i + float(self.config.training.monotonic_offload_margin)
@@ -612,6 +612,7 @@ class PPOTrainer:
             for _ in range(step_limit):
                 positions_np = self.env.positions.copy()
                 actor_obs, core_obs, server_info = self._prepare_model_observation(observation, update_stats=True)
+                monotonic_gap = self.env.compute_taskwise_delay_proxies()["taskwise_local_edge_delay_gap_s"].copy()
                 positions = self.torch.from_numpy(positions_np).float().to(self.device)
 
                 with self.torch.no_grad():
@@ -659,6 +660,7 @@ class PPOTrainer:
                         value=value.cpu().numpy(),
                         done=done,
                         timeout_ratio=timeout_ratio,
+                        taskwise_delay_gap=monotonic_gap,
                     )
                 )
                 observation = next_observation
@@ -733,6 +735,7 @@ class PPOTrainer:
                 old_log_prob = batch["log_prob"][step_indices]
                 advantage = gae_batch["advantage"][step_indices]
                 returns = gae_batch["return"][step_indices]
+                taskwise_delay_gap = batch["taskwise_delay_gap"][step_indices]
 
                 role_mu, role_sigma = self._actor_role_posterior(actor_obs)
                 log_prob, entropy, policy_mean_native, _ = self.actor.evaluate_actions(
@@ -769,7 +772,7 @@ class PPOTrainer:
                 if self.config.model.use_role and self.config.model.use_l_d_simple:
                     flat_role_mu = role_mu.reshape(-1, role_mu.shape[-1])
                     l_d_loss = self.role_diversity_loss(flat_role_mu)
-                monotonic_loss = self._compute_monotonic_offloading_loss(actor_obs, policy_mean_native)
+                monotonic_loss = self._compute_monotonic_offloading_loss(taskwise_delay_gap, policy_mean_native)
                 monotonic_losses.append(float(monotonic_loss.item()))
 
                 actor_loss = (

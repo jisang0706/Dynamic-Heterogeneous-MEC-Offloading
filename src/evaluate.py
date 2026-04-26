@@ -105,6 +105,12 @@ def _mean_or_none(values: list[float]) -> float | None:
     return float(np.mean(values))
 
 
+def _percentile_or_none(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    return float(np.percentile(np.asarray(values, dtype=np.float32), percentile))
+
+
 def _diagonal_gaussian_nll(sample: torch.Tensor, mu: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
     variance = std.pow(2).clamp_min(1e-12)
     quadratic = (sample - mu).pow(2) / variance
@@ -125,6 +131,21 @@ def _pairwise_distance_correlation(role_mu: np.ndarray | None, action_env: np.nd
     if np.allclose(role_values.std(), 0.0) or np.allclose(action_values.std(), 0.0):
         return None
     correlation = np.corrcoef(role_values, action_values)[0, 1]
+    if np.isnan(correlation):
+        return None
+    return float(correlation)
+
+
+def _flattened_correlation(first: np.ndarray, second: np.ndarray) -> float | None:
+    first_values = np.asarray(first, dtype=np.float32).reshape(-1)
+    second_values = np.asarray(second, dtype=np.float32).reshape(-1)
+    if first_values.size == 0 or second_values.size == 0:
+        return None
+    if first_values.shape != second_values.shape:
+        raise ValueError(f"Correlation inputs must have matching shapes, got {first_values.shape} and {second_values.shape}.")
+    if np.allclose(first_values.std(), 0.0) or np.allclose(second_values.std(), 0.0):
+        return None
+    correlation = np.corrcoef(first_values, second_values)[0, 1]
     if np.isnan(correlation):
         return None
     return float(correlation)
@@ -208,6 +229,32 @@ def summarize_evaluation(
         "mean_deadline_to_bestcase_ratio": float(np.mean([item["mean_deadline_to_bestcase_ratio"] for item in step_records]))
         if step_records
         else 0.0,
+        "mean_non_timeout_task_cost": _mean_or_none(
+            [float(item["mean_non_timeout_task_cost"]) for item in step_records if item.get("mean_non_timeout_task_cost") is not None]
+        ),
+        "p95_task_delay_norm": _percentile_or_none(
+            [float(item["p95_task_delay_norm"]) for item in step_records if item.get("p95_task_delay_norm") is not None],
+            95.0,
+        ),
+        "mean_worst_device_timeout_ratio": _mean_or_none(
+            [float(item["worst_device_timeout_ratio"]) for item in step_records if item.get("worst_device_timeout_ratio") is not None]
+        ),
+        "low_cpu_timeout_ratio": _mean_or_none(
+            [item["timeout_ratio"] for item in device_records if _cpu_regime(float(item["cpu_ghz"])) == "low"]
+        ),
+        "mid_cpu_timeout_ratio": _mean_or_none(
+            [item["timeout_ratio"] for item in device_records if _cpu_regime(float(item["cpu_ghz"])) == "mid"]
+        ),
+        "high_cpu_timeout_ratio": _mean_or_none(
+            [item["timeout_ratio"] for item in device_records if _cpu_regime(float(item["cpu_ghz"])) == "high"]
+        ),
+        "mean_taskwise_gap_offloading_correlation": _mean_or_none(
+            [
+                float(item["taskwise_gap_offloading_correlation"])
+                for item in step_records
+                if item.get("taskwise_gap_offloading_correlation") is not None
+            ]
+        ),
     }
 
     optional_metric_names = (
@@ -570,6 +617,10 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
     role_var_means: list[float] = []
     near_zero_sigma_fractions: list[float] = []
     role_action_corrs: list[float] = []
+    all_task_delay_norms: list[float] = []
+    all_non_timeout_task_costs: list[float] = []
+    worst_device_timeout_ratios: list[float] = []
+    taskwise_gap_offloading_correlations: list[float] = []
 
     for episode_idx in range(episodes):
         observation = env.reset()
@@ -589,6 +640,7 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
             pre_step_local_queues = env.local_queues.copy()
             pre_step_deadlines_s = env.task_deadlines_s.copy()
             pre_step_delay_components = env.compute_best_case_delay_components()
+            pre_step_taskwise_delay_proxies = env.compute_taskwise_delay_proxies()
             if policy.runner_kind == "fixed":
                 env_action, action_native, log_prob, role_sigma = _select_fixed_action(policy, episode_idx, step_idx)
                 role_mu = np.zeros((policy.config.environment.num_agents, policy.config.model.role_dim), dtype=np.float32)
@@ -625,6 +677,8 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
             task_cost = env.last_reward_breakdown["task_normalized_cost"]
             task_delay = env.last_reward_breakdown["task_completion_delay_s"]
             timeout_mask = env.last_reward_breakdown["task_timeout_mask"]
+            task_delay_norm = task_delay / np.maximum(pre_step_deadlines_s, 1e-8)
+            non_timeout_cost = task_cost[~timeout_mask.astype(bool)]
             per_agent_timeout = timeout_mask.mean(axis=1).astype(np.float32)
             per_agent_offloading = env_action[:, :-1].mean(axis=1).astype(np.float32)
             per_agent_deadline_s = pre_step_deadlines_s.mean(axis=1).astype(np.float32)
@@ -632,6 +686,19 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
             per_agent_deadline_to_bestcase_ratio = (
                 pre_step_deadlines_s / np.maximum(pre_step_delay_components["d_best_s"], 1e-8)
             ).mean(axis=1).astype(np.float32)
+            worst_device_timeout_ratio = float(per_agent_timeout.max())
+            low_cpu_mask = pre_step_cpu_ghz < 2.0
+            low_cpu_timeout_ratio = float(per_agent_timeout[low_cpu_mask].mean()) if bool(low_cpu_mask.any()) else None
+            taskwise_gap_offloading_correlation = _flattened_correlation(
+                pre_step_taskwise_delay_proxies["taskwise_local_edge_delay_gap_s"],
+                env_action[:, :-1],
+            )
+            all_task_delay_norms.extend(task_delay_norm.reshape(-1).astype(np.float32).tolist())
+            if non_timeout_cost.size > 0:
+                all_non_timeout_task_costs.extend(non_timeout_cost.reshape(-1).astype(np.float32).tolist())
+            worst_device_timeout_ratios.append(worst_device_timeout_ratio)
+            if taskwise_gap_offloading_correlation is not None:
+                taskwise_gap_offloading_correlations.append(taskwise_gap_offloading_correlation)
 
             if role_sigma is not None:
                 role_std_means.append(float(np.mean(role_sigma)))
@@ -678,6 +745,11 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
                     "mean_deadline_s": float(per_agent_deadline_s.mean()),
                     "mean_best_case_delay_s": float(per_agent_best_case_delay_s.mean()),
                     "mean_deadline_to_bestcase_ratio": float(per_agent_deadline_to_bestcase_ratio.mean()),
+                    "mean_non_timeout_task_cost": None if non_timeout_cost.size == 0 else float(non_timeout_cost.mean()),
+                    "p95_task_delay_norm": float(np.percentile(task_delay_norm.reshape(-1), 95.0)),
+                    "worst_device_timeout_ratio": worst_device_timeout_ratio,
+                    "low_cpu_timeout_ratio": low_cpu_timeout_ratio,
+                    "taskwise_gap_offloading_correlation": taskwise_gap_offloading_correlation,
                     "device_rewards": reward.astype(np.float32),
                     "device_distances_m": pre_step_distances_m.astype(np.float32),
                     "device_cpu_ghz": pre_step_cpu_ghz.astype(np.float32),
@@ -689,6 +761,7 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
                     "device_offloading_ratio": per_agent_offloading,
                     "power_ratio": env_action[:, -1].astype(np.float32),
                     "offloading_ratio_tasks": env_action[:, :-1].astype(np.float32),
+                    "taskwise_local_edge_delay_gap_s": pre_step_taskwise_delay_proxies["taskwise_local_edge_delay_gap_s"].astype(np.float32),
                     "role_mu": None if role_mu is None else np.asarray(role_mu, dtype=np.float32),
                     "role_sigma": None if role_sigma is None else np.asarray(role_sigma, dtype=np.float32),
                 }
@@ -744,6 +817,10 @@ def evaluate_policy(policy: LoadedPolicy, episodes: int, deterministic_policy: b
     summary["metrics"]["mean_role_std"] = _mean_or_none(role_std_means)
     summary["metrics"]["mean_role_variance"] = _mean_or_none(role_var_means)
     summary["metrics"]["mean_near_zero_sigma_fraction"] = _mean_or_none(near_zero_sigma_fractions)
+    summary["metrics"]["p95_task_delay_norm"] = _percentile_or_none(all_task_delay_norms, 95.0)
+    summary["metrics"]["mean_non_timeout_task_cost"] = _mean_or_none(all_non_timeout_task_costs)
+    summary["metrics"]["mean_worst_device_timeout_ratio"] = _mean_or_none(worst_device_timeout_ratios)
+    summary["metrics"]["mean_taskwise_gap_offloading_correlation"] = _mean_or_none(taskwise_gap_offloading_correlations)
     return summary, step_records
 
 

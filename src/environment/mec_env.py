@@ -202,10 +202,34 @@ class DynamicMECEnv:
             raise ValueError("compute_actor_relative_features currently supports actor_relative_feature_dim=3 only.")
         if self.local_queues.size == 0 or self.task_matrix.size == 0:
             return np.zeros((self.config.num_agents, self.config.actor_relative_feature_dim), dtype=np.float32)
+        delay_components = self.compute_taskwise_delay_proxies()
+        local_queue_delay_s = delay_components["local_queue_delay_s"]
+        edge_queue_delay_s = delay_components["edge_queue_delay_s"]
+        local_edge_delay_gap_s = delay_components["taskwise_local_edge_delay_gap_s"].mean(axis=1)
+
+        return np.stack(
+            (
+                local_queue_delay_s,
+                edge_queue_delay_s,
+                local_edge_delay_gap_s,
+            ),
+            axis=-1,
+        ).astype(np.float32)
+
+    def compute_taskwise_delay_proxies(self) -> dict[str, np.ndarray]:
+        if self.local_queues.size == 0 or self.task_matrix.size == 0:
+            zeros_tasks = np.zeros((self.config.num_agents, self.config.num_tasks_per_step), dtype=np.float32)
+            zeros_agents = np.zeros(self.config.num_agents, dtype=np.float32)
+            return {
+                "local_queue_delay_s": zeros_agents,
+                "edge_queue_delay_s": zeros_agents,
+                "local_task_delay_s": zeros_tasks,
+                "edge_task_delay_s": zeros_tasks,
+                "taskwise_local_edge_delay_gap_s": zeros_tasks,
+            }
 
         task_work_gcycles = self.task_data_size_mb * self.task_density_gcycles_per_mb
-        mean_task_work_gcycles = task_work_gcycles.mean(axis=1)
-        mean_task_bits = self.task_data_size_mb.mean(axis=1) * 1e6
+        task_bits = self.task_data_size_mb * 1e6
         local_cpu_ghz = np.maximum(self.cpu_freqs_ghz, 1e-6)
         server_cpu_ghz = max(self.config.effective_server_cpu_ghz, 1e-6)
 
@@ -223,22 +247,21 @@ class DynamicMECEnv:
         beta_max_bps = device_bandwidth_hz * np.log2(1.0 + np.maximum(snr, 0.0))
         beta_max_bps = np.maximum(beta_max_bps, self.config.min_rate_bps)
 
-        mean_local_task_delay_s = mean_task_work_gcycles / local_cpu_ghz
-        mean_edge_task_delay_s = (mean_task_bits / beta_max_bps) + (mean_task_work_gcycles / server_cpu_ghz)
-        local_edge_delay_gap_s = (
-            local_queue_delay_s + mean_local_task_delay_s
+        local_task_delay_s = task_work_gcycles / local_cpu_ghz[:, None]
+        edge_task_delay_s = (task_bits / beta_max_bps[:, None]) + (task_work_gcycles / server_cpu_ghz)
+        taskwise_local_edge_delay_gap_s = (
+            local_queue_delay_s[:, None] + local_task_delay_s
         ) - (
-            edge_queue_delay_s + mean_edge_task_delay_s
+            edge_queue_delay_s[:, None] + edge_task_delay_s
         )
 
-        return np.stack(
-            (
-                local_queue_delay_s,
-                edge_queue_delay_s,
-                local_edge_delay_gap_s,
-            ),
-            axis=-1,
-        ).astype(np.float32)
+        return {
+            "local_queue_delay_s": local_queue_delay_s.astype(np.float32),
+            "edge_queue_delay_s": edge_queue_delay_s.astype(np.float32),
+            "local_task_delay_s": local_task_delay_s.astype(np.float32),
+            "edge_task_delay_s": edge_task_delay_s.astype(np.float32),
+            "taskwise_local_edge_delay_gap_s": taskwise_local_edge_delay_gap_s.astype(np.float32),
+        }
 
     def _build_observation(self) -> ObservationBundle:
         device_obs = []
