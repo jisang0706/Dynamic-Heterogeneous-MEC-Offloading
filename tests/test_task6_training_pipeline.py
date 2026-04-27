@@ -154,6 +154,24 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         self.assertIsNotNone(trainer.actor_obs_scaler)
         self.assertTrue(torch.isfinite(actor_obs).all())
 
+    def test_trainer_uses_separate_actor_learning_rate(self) -> None:
+        config = ExperimentConfig(
+            seed=23,
+            environment=EnvironmentConfig(num_agents=5, episode_length=2, graph_type="star"),
+            model=ModelConfig(critic_type="mlp", use_role=False, use_l_i=False, actor_type="individual"),
+            training=TrainingConfig(
+                run_mode="train",
+                total_episodes=1,
+                update_every_episodes=1,
+                learning_rate=2e-4,
+                actor_learning_rate=1e-4,
+            ),
+        )
+        trainer = PPOTrainer(config)
+
+        self.assertAlmostEqual(trainer.actor_optimizer.param_groups[0]["lr"], 1e-4, places=10)
+        self.assertAlmostEqual(trainer.critic_optimizer.param_groups[0]["lr"], 2e-4, places=10)
+
     def test_monotonic_offloading_loss_penalizes_reverse_ordering_taskwise(self) -> None:
         config = ExperimentConfig(
             seed=7,
@@ -194,7 +212,20 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         violating_policy_mean[:, 0, 2] = 5.0
         violating_policy_mean[:, 1, 2] = 6.0
         violating_policy_mean[:, 2, 2] = 4.0
-        violating_loss = trainer._compute_monotonic_offloading_loss(taskwise_gap, violating_policy_mean)
+        low_queue_server = torch.tensor([[0.1, 0.0, 1.0], [0.1, 0.0, 1.0]], dtype=torch.float32)
+        high_queue_server = torch.tensor([[1.5, 0.0, 1.0], [1.5, 0.0, 1.0]], dtype=torch.float32)
+        violating_loss = trainer._compute_monotonic_offloading_loss(
+            taskwise_gap,
+            low_queue_server,
+            violating_policy_mean,
+            effective_monotonic_coeff=1e-2,
+        )
+        violating_loss_high_queue = trainer._compute_monotonic_offloading_loss(
+            taskwise_gap,
+            high_queue_server,
+            violating_policy_mean,
+            effective_monotonic_coeff=1e-2,
+        )
 
         monotone_policy_mean = torch.zeros(2, 3, 4, dtype=torch.float32)
         monotone_policy_mean[:, 0, 0] = 6.0
@@ -206,9 +237,15 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         monotone_policy_mean[:, 0, 2] = 5.0
         monotone_policy_mean[:, 1, 2] = 4.0
         monotone_policy_mean[:, 2, 2] = 6.0
-        monotone_loss = trainer._compute_monotonic_offloading_loss(taskwise_gap, monotone_policy_mean)
+        monotone_loss = trainer._compute_monotonic_offloading_loss(
+            taskwise_gap,
+            low_queue_server,
+            monotone_policy_mean,
+            effective_monotonic_coeff=1e-2,
+        )
 
         self.assertGreater(float(violating_loss.item()), 0.0)
+        self.assertLess(float(violating_loss_high_queue.item()), float(violating_loss.item()))
         self.assertAlmostEqual(float(monotone_loss.item()), 0.0, places=6)
 
     def test_effective_monotonic_coeff_decays_late_in_training(self) -> None:
@@ -394,6 +431,9 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         )
         self.assertTrue(update.non_timeout_task_fraction is None or np.isfinite(update.non_timeout_task_fraction))
         self.assertEqual(len(update.policy_log_std_mean_per_dim or []), 4)
+        self.assertTrue(
+            update.mean_shared_congestion_price is None or np.isfinite(update.mean_shared_congestion_price)
+        )
         self.assertTrue(
             update.near_zero_sigma_fraction is None or np.isfinite(update.near_zero_sigma_fraction)
         )

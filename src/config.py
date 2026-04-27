@@ -189,11 +189,14 @@ class TrainingConfig:
     variant_id: str | None = None
     resume_from: str | None = None
     learning_rate: float = 2e-4
+    actor_learning_rate: float = 1e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
     ppo_clip: float = 0.07
     entropy_coeff: float = 0.002
     local_reward_weight: float = 0.6
+    shared_congestion_delta_coeff: float = 50.0
+    shared_congestion_queue_coeff: float = 10.0
     l_i_coeff: float = 5e-5
     l_i_warmup_updates: int = 100
     l_d_coeff: float = 1e-3
@@ -207,7 +210,7 @@ class TrainingConfig:
     sigma_floor: float = 0.05
     gradient_clip: float = 1.0
     update_every_episodes: int = 4
-    ppo_epochs: int = 4
+    ppo_epochs: int = 2
     batch_size: int = 800
     total_episodes: int = 4000
     smoke_steps: int = 8
@@ -275,6 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--initial-power-mean-env", type=float, default=0.8)
 
     parser.add_argument("--learning-rate", type=float, default=2e-4)
+    parser.add_argument("--actor-learning-rate", type=float, default=1e-4)
     parser.add_argument("--run-mode", choices=("smoke", "train"), default="smoke")
     parser.add_argument("--variant-id", type=str, default=None)
     parser.add_argument("--resume-from", type=Path, default=None)
@@ -283,6 +287,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ppo-clip", type=float, default=0.07)
     parser.add_argument("--entropy-coeff", type=float, default=0.002)
     parser.add_argument("--local-reward-weight", type=float, default=0.6)
+    parser.add_argument("--shared-congestion-delta-coeff", type=float, default=50.0)
+    parser.add_argument("--shared-congestion-queue-coeff", type=float, default=10.0)
     parser.add_argument("--l-i-coeff", type=float, default=5e-5)
     parser.add_argument("--l-i-warmup-updates", type=int, default=100)
     parser.add_argument("--l-d-coeff", type=float, default=1e-3)
@@ -296,7 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sigma-floor", type=float, default=0.05)
     parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument("--update-every-episodes", type=int, default=4)
-    parser.add_argument("--ppo-epochs", type=int, default=4)
+    parser.add_argument("--ppo-epochs", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=800)
     parser.add_argument("--total-episodes", type=int, default=4000)
     parser.add_argument("--smoke-steps", type=int, default=8)
@@ -350,11 +356,14 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         variant_id=args.variant_id,
         resume_from=None if args.resume_from is None else str(args.resume_from),
         learning_rate=args.learning_rate,
+        actor_learning_rate=args.actor_learning_rate,
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,
         ppo_clip=args.ppo_clip,
         entropy_coeff=args.entropy_coeff,
         local_reward_weight=args.local_reward_weight,
+        shared_congestion_delta_coeff=args.shared_congestion_delta_coeff,
+        shared_congestion_queue_coeff=args.shared_congestion_queue_coeff,
         l_i_coeff=args.l_i_coeff,
         l_i_warmup_updates=args.l_i_warmup_updates,
         l_d_coeff=args.l_d_coeff,
@@ -406,6 +415,14 @@ def build_config_from_dict(payload: dict[str, Any]) -> ExperimentConfig:
         training_payload["monotonic_decay_start_fraction"] = 1.0
     if "monotonic_decay_end_fraction" not in training_payload:
         training_payload["monotonic_decay_end_fraction"] = 1.0
+    if "actor_learning_rate" not in training_payload:
+        training_payload["actor_learning_rate"] = float(
+            training_payload.get("learning_rate", TrainingConfig.actor_learning_rate)
+        )
+    if "shared_congestion_delta_coeff" not in training_payload:
+        training_payload["shared_congestion_delta_coeff"] = 0.0
+    if "shared_congestion_queue_coeff" not in training_payload:
+        training_payload["shared_congestion_queue_coeff"] = 0.0
 
     for key in ("task_size_range_mb", "task_density_range_gcycles_per_mb", "task_deadline_range_s"):
         if key in environment_payload:

@@ -48,6 +48,7 @@ class TrainingUpdateSummary:
     sampled_env_action_near_one_fraction: float | None = None
     non_timeout_task_fraction: float | None = None
     policy_log_std_mean_per_dim: list[float] | None = None
+    mean_shared_congestion_price: float | None = None
 
 
 @dataclass(slots=True)
@@ -204,7 +205,7 @@ class PPOTrainer:
             actor_modules.append(self.trajectory_encoder)
         self.actor_modules = actor_modules
         actor_parameters = list(chain.from_iterable(module.parameters() for module in actor_modules))
-        self.actor_optimizer = self.torch.optim.Adam(actor_parameters, lr=config.training.learning_rate)
+        self.actor_optimizer = self.torch.optim.Adam(actor_parameters, lr=config.training.actor_learning_rate)
         self.critic_optimizer = self.torch.optim.Adam(self.critic.parameters(), lr=config.training.learning_rate)
         self.device_obs_scaler = None
         self.server_obs_scaler = None
@@ -481,6 +482,7 @@ class PPOTrainer:
             "sampled_env_action_near_one_fraction": summary.sampled_env_action_near_one_fraction,
             "non_timeout_task_fraction": summary.non_timeout_task_fraction,
             "policy_log_std_mean_per_dim": summary.policy_log_std_mean_per_dim,
+            "mean_shared_congestion_price": summary.mean_shared_congestion_price,
         }
         self.update_history.append(record)
         if self.update_log_path is not None:
@@ -558,6 +560,7 @@ class PPOTrainer:
     def _compute_monotonic_offloading_loss(
         self,
         taskwise_delay_gap: Any,
+        server_info: Any,
         policy_mean_native: Any,
         effective_monotonic_coeff: float,
     ) -> Any:
@@ -566,6 +569,8 @@ class PPOTrainer:
 
         if taskwise_delay_gap.dim() == 2:
             taskwise_delay_gap = taskwise_delay_gap.unsqueeze(0)
+        if server_info.dim() == 1:
+            server_info = server_info.unsqueeze(0)
 
         taskwise_offloading_env = self.actor.action_to_env(policy_mean_native[..., :-1])
         if taskwise_offloading_env.dim() == 2:
@@ -581,14 +586,20 @@ class PPOTrainer:
         gap_j = taskwise_delay_gap.unsqueeze(1)
         offload_i = taskwise_offloading_env.unsqueeze(2)
         offload_j = taskwise_offloading_env.unsqueeze(1)
-        valid_pairs = gap_i > (gap_j + float(self.config.training.monotonic_load_margin))
+        valid_pairs = (
+            (gap_i > 0.0)
+            & (gap_i > (gap_j + float(self.config.training.monotonic_load_margin)))
+        )
         if not bool(valid_pairs.any()):
             return policy_mean_native.new_tensor(0.0)
 
+        queue_gate = 1.0 / (1.0 + self.torch.clamp(server_info[:, 0], min=0.0))
+        queue_gate = queue_gate.view(-1, 1, 1, 1)
         violation = self.torch.relu(
             offload_j - offload_i + float(self.config.training.monotonic_offload_margin)
         )
-        return violation[valid_pairs].mean()
+        weighted_violation = violation * queue_gate
+        return weighted_violation[valid_pairs].mean()
 
     def _compute_role_diagnostics(self, role_mu: Any, role_sigma: Any | None) -> dict[str, Any] | None:
         if role_sigma is None:
@@ -666,9 +677,14 @@ class PPOTrainer:
                 next_observation, reward, done, info = self.env.step(env_action.cpu().numpy())
                 joint_reward = float(reward.sum())
                 cooperative_reward = joint_reward / float(self.config.environment.num_agents)
+                shared_congestion_price = (
+                    self.config.training.shared_congestion_delta_coeff * max(float(next_observation.server_obs[1]), 0.0)
+                    + self.config.training.shared_congestion_queue_coeff * max(float(next_observation.server_obs[0]), 0.0)
+                )
                 effective_reward = (
                     self.config.training.local_reward_weight * reward
                     + (1.0 - self.config.training.local_reward_weight) * cooperative_reward
+                    - shared_congestion_price
                 ).astype(np.float32)
                 if self.reward_scalers is None:
                     scaled_reward = effective_reward
@@ -701,6 +717,7 @@ class PPOTrainer:
                         done=done,
                         timeout_ratio=timeout_ratio,
                         taskwise_delay_gap=monotonic_gap,
+                        shared_congestion_price=shared_congestion_price,
                     )
                 )
                 observation = next_observation
@@ -815,6 +832,7 @@ class PPOTrainer:
                     l_d_loss = self.role_diversity_loss(flat_role_mu)
                 monotonic_loss = self._compute_monotonic_offloading_loss(
                     taskwise_delay_gap,
+                    server_info,
                     policy_mean_native,
                     effective_monotonic_coeff,
                 )
@@ -898,6 +916,7 @@ class PPOTrainer:
             sampled_env_action_near_one_fraction=sampled_env_action_near_one_fraction,
             non_timeout_task_fraction=non_timeout_task_fraction,
             policy_log_std_mean_per_dim=self._policy_log_std_mean_per_dim(),
+            mean_shared_congestion_price=buffer.mean_shared_congestion_price(),
         )
 
     def run_smoke_rollout(self) -> SmokeRunSummary:

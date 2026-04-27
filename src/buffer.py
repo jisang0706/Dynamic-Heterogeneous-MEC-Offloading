@@ -26,6 +26,7 @@ class Transition:
     value: np.ndarray | float | None = None
     timeout_ratio: float | None = None
     taskwise_delay_gap: np.ndarray | None = None
+    shared_congestion_price: float | None = None
 
     @property
     def device_obs(self) -> np.ndarray:
@@ -73,6 +74,18 @@ class RolloutBuffer:
                 ]
             )
         )
+
+    def mean_shared_congestion_price(self) -> float:
+        if not self.transitions:
+            return 0.0
+        prices = [
+            float(transition.shared_congestion_price)
+            for transition in self.transitions
+            if transition.shared_congestion_price is not None
+        ]
+        if not prices:
+            return 0.0
+        return float(np.mean(prices))
 
     def build_agent_trajectory_batch(
         self,

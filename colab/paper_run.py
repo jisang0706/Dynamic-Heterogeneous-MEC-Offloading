@@ -33,8 +33,8 @@ DEFAULT_STAGE_EVAL_EPISODES = {
 
 DEFAULT_CHECKPOINT_MILESTONES = {
     "smoke": (100,),
-    "core": (100, 200, 400, 800, 1600, 3200),
-    "scale": (100, 200, 400, 800, 1600, 3200),
+    "core": (100, 200, 400, 600, 800, 1200, 1600, 2000, 2400, 2800, 3200, 3600),
+    "scale": (100, 200, 400, 600, 800, 1200, 1600, 2000, 2400, 2800, 3200, 3600),
 }
 
 DEFAULT_SEED_POOL = (42, 43, 44, 45, 46)
@@ -85,12 +85,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delay-mode", choices=("li_original", "bestcase_slack"), default="bestcase_slack")
     parser.add_argument("--update-every-episodes", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=800)
-    parser.add_argument("--ppo-epochs", type=int, default=4)
+    parser.add_argument("--ppo-epochs", type=int, default=2)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
+    parser.add_argument("--actor-learning-rate", type=float, default=1e-4)
     parser.add_argument("--ppo-clip", type=float, default=0.07)
     parser.add_argument("--entropy-coeff", type=float, default=2e-3)
     parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument("--local-reward-weight", type=float, default=0.6)
+    parser.add_argument("--shared-congestion-delta-coeff", type=float, default=50.0)
+    parser.add_argument("--shared-congestion-queue-coeff", type=float, default=10.0)
     parser.add_argument("--l-i-coeff", type=float, default=5e-5)
     parser.add_argument("--l-i-warmup-updates", type=int, default=100)
     parser.add_argument("--monotonic-offloading-coeff", type=float, default=1e-3)
@@ -441,12 +444,18 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
         str(args.ppo_epochs),
         "--learning-rate",
         str(args.learning_rate),
+        "--actor-learning-rate",
+        str(args.actor_learning_rate),
         "--ppo-clip",
         str(args.ppo_clip),
         "--entropy-coeff",
         str(args.entropy_coeff),
         "--local-reward-weight",
         str(args.local_reward_weight),
+        "--shared-congestion-delta-coeff",
+        str(args.shared_congestion_delta_coeff),
+        "--shared-congestion-queue-coeff",
+        str(args.shared_congestion_queue_coeff),
         "--gradient-clip",
         str(args.gradient_clip),
         "--l-i-coeff",

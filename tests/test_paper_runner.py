@@ -12,14 +12,18 @@ from src.config import ExperimentConfig
 
 
 class PaperRunTests(unittest.TestCase):
-    def test_parser_uses_stabilized_training_defaults(self) -> None:
+    def test_parser_uses_queue_aware_training_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             args = paper_run.build_parser().parse_args(["--workspace-root", tmp_dir])
 
         self.assertEqual(args.learning_rate, 2e-4)
+        self.assertEqual(args.actor_learning_rate, 1e-4)
         self.assertEqual(args.ppo_clip, 0.07)
+        self.assertEqual(args.ppo_epochs, 2)
         self.assertEqual(args.entropy_coeff, 2e-3)
         self.assertEqual(args.local_reward_weight, 0.6)
+        self.assertEqual(args.shared_congestion_delta_coeff, 50.0)
+        self.assertEqual(args.shared_congestion_queue_coeff, 10.0)
         self.assertEqual(args.l_i_coeff, 5e-5)
         self.assertEqual(args.l_i_warmup_updates, 100)
         self.assertEqual(args.monotonic_offloading_coeff, 1e-3)
@@ -100,7 +104,7 @@ class PaperRunTests(unittest.TestCase):
                 output_root=Path(tmp_dir) / "core" / "m05" / "seed_42" / "a1",
             )
 
-        self.assertEqual(paper_run.resolve_checkpoint_targets(spec, args), [100, 200, 400, 800])
+        self.assertEqual(paper_run.resolve_checkpoint_targets(spec, args), [100, 200, 400, 600, 800])
 
     def test_select_checkpoint_candidates_prefers_final_checkpoint_at_same_episode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
