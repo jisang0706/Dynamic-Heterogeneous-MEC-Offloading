@@ -94,12 +94,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-reward-weight", type=float, default=0.6)
     parser.add_argument("--shared-congestion-delta-coeff", type=float, default=50.0)
     parser.add_argument("--shared-congestion-queue-coeff", type=float, default=10.0)
+    parser.add_argument("--shared-congestion-delta-reference", type=float, default=10.0)
+    parser.add_argument("--shared-congestion-queue-reference", type=float, default=20.0)
     parser.add_argument("--l-i-coeff", type=float, default=5e-5)
     parser.add_argument("--l-i-warmup-updates", type=int, default=100)
     parser.add_argument("--monotonic-offloading-coeff", type=float, default=1e-3)
     parser.add_argument("--monotonic-offloading-coeff-final", type=float, default=5e-4)
     parser.add_argument("--monotonic-decay-start-fraction", type=float, default=0.6)
     parser.add_argument("--monotonic-decay-end-fraction", type=float, default=1.0)
+    parser.add_argument("--monotonic-queue-reference", type=float, default=20.0)
     parser.add_argument("--lambda-var", type=float, default=1e-5)
     parser.add_argument("--sigma-floor", type=float, default=0.05)
     parser.add_argument("--initial-action-std-env", type=float, default=0.15)
@@ -456,6 +459,10 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
         str(args.shared_congestion_delta_coeff),
         "--shared-congestion-queue-coeff",
         str(args.shared_congestion_queue_coeff),
+        "--shared-congestion-delta-reference",
+        str(args.shared_congestion_delta_reference),
+        "--shared-congestion-queue-reference",
+        str(args.shared_congestion_queue_reference),
         "--gradient-clip",
         str(args.gradient_clip),
         "--l-i-coeff",
@@ -470,6 +477,8 @@ def _train_command(spec: RunSpec, args: argparse.Namespace, resume_from: Path | 
         str(args.monotonic_decay_start_fraction),
         "--monotonic-decay-end-fraction",
         str(args.monotonic_decay_end_fraction),
+        "--monotonic-queue-reference",
+        str(args.monotonic_queue_reference),
         "--lambda-var",
         str(args.lambda_var),
         "--sigma-floor",

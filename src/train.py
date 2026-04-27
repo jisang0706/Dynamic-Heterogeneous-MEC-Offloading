@@ -393,6 +393,12 @@ class PPOTrainer:
         alpha = (progress - start_fraction) / (end_fraction - start_fraction)
         return initial_coeff + alpha * (final_coeff - initial_coeff)
 
+    @staticmethod
+    def _bounded_positive_term(value: float, reference: float) -> float:
+        safe_reference = max(float(reference), 1e-6)
+        bounded = math.log1p(max(float(value), 0.0)) / math.log1p(safe_reference)
+        return float(max(0.0, bounded))
+
     def _load_training_checkpoint(self, checkpoint_path: Path) -> None:
         checkpoint = self._torch_load_checkpoint(checkpoint_path)
         self.actor.load_state_dict(checkpoint["actor"])
@@ -560,7 +566,7 @@ class PPOTrainer:
     def _compute_monotonic_offloading_loss(
         self,
         taskwise_delay_gap: Any,
-        server_info: Any,
+        monotonic_queue_term: Any,
         policy_mean_native: Any,
         effective_monotonic_coeff: float,
     ) -> Any:
@@ -569,8 +575,8 @@ class PPOTrainer:
 
         if taskwise_delay_gap.dim() == 2:
             taskwise_delay_gap = taskwise_delay_gap.unsqueeze(0)
-        if server_info.dim() == 1:
-            server_info = server_info.unsqueeze(0)
+        if monotonic_queue_term.dim() == 0:
+            monotonic_queue_term = monotonic_queue_term.unsqueeze(0)
 
         taskwise_offloading_env = self.actor.action_to_env(policy_mean_native[..., :-1])
         if taskwise_offloading_env.dim() == 2:
@@ -593,7 +599,7 @@ class PPOTrainer:
         if not bool(valid_pairs.any()):
             return policy_mean_native.new_tensor(0.0)
 
-        queue_gate = 1.0 / (1.0 + self.torch.clamp(server_info[:, 0], min=0.0))
+        queue_gate = 1.0 / (1.0 + self.torch.clamp(monotonic_queue_term, min=0.0))
         queue_gate = queue_gate.view(-1, 1, 1, 1)
         violation = self.torch.relu(
             offload_j - offload_i + float(self.config.training.monotonic_offload_margin)
@@ -664,6 +670,10 @@ class PPOTrainer:
                 positions_np = self.env.positions.copy()
                 actor_obs, core_obs, server_info = self._prepare_model_observation(observation, update_stats=True)
                 monotonic_gap = self.env.compute_taskwise_delay_proxies()["taskwise_local_edge_delay_gap_s"].copy()
+                monotonic_queue_term = self._bounded_positive_term(
+                    float(self.env.edge_queue),
+                    self.config.training.monotonic_queue_reference,
+                )
                 positions = self.torch.from_numpy(positions_np).float().to(self.device)
 
                 with self.torch.no_grad():
@@ -677,9 +687,17 @@ class PPOTrainer:
                 next_observation, reward, done, info = self.env.step(env_action.cpu().numpy())
                 joint_reward = float(reward.sum())
                 cooperative_reward = joint_reward / float(self.config.environment.num_agents)
+                queue_term = self._bounded_positive_term(
+                    float(info["edge_queue"]),
+                    self.config.training.shared_congestion_queue_reference,
+                )
+                delta_queue_term = self._bounded_positive_term(
+                    max(float(info["delta_edge_queue"]), 0.0),
+                    self.config.training.shared_congestion_delta_reference,
+                )
                 shared_congestion_price = (
-                    self.config.training.shared_congestion_delta_coeff * max(float(next_observation.server_obs[1]), 0.0)
-                    + self.config.training.shared_congestion_queue_coeff * max(float(next_observation.server_obs[0]), 0.0)
+                    self.config.training.shared_congestion_delta_coeff * delta_queue_term
+                    + self.config.training.shared_congestion_queue_coeff * queue_term
                 )
                 effective_reward = (
                     self.config.training.local_reward_weight * reward
@@ -717,6 +735,7 @@ class PPOTrainer:
                         done=done,
                         timeout_ratio=timeout_ratio,
                         taskwise_delay_gap=monotonic_gap,
+                        monotonic_queue_term=monotonic_queue_term,
                         shared_congestion_price=shared_congestion_price,
                     )
                 )
@@ -794,6 +813,7 @@ class PPOTrainer:
                 advantage = gae_batch["advantage"][step_indices]
                 returns = gae_batch["return"][step_indices]
                 taskwise_delay_gap = batch["taskwise_delay_gap"][step_indices]
+                monotonic_queue_term = batch["monotonic_queue_term"][step_indices]
 
                 role_mu, role_sigma = self._actor_role_posterior(actor_obs)
                 log_prob, entropy, policy_mean_native, _ = self.actor.evaluate_actions(
@@ -832,7 +852,7 @@ class PPOTrainer:
                     l_d_loss = self.role_diversity_loss(flat_role_mu)
                 monotonic_loss = self._compute_monotonic_offloading_loss(
                     taskwise_delay_gap,
-                    server_info,
+                    monotonic_queue_term,
                     policy_mean_native,
                     effective_monotonic_coeff,
                 )

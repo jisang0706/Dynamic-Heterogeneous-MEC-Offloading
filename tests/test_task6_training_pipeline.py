@@ -212,17 +212,17 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         violating_policy_mean[:, 0, 2] = 5.0
         violating_policy_mean[:, 1, 2] = 6.0
         violating_policy_mean[:, 2, 2] = 4.0
-        low_queue_server = torch.tensor([[0.1, 0.0, 1.0], [0.1, 0.0, 1.0]], dtype=torch.float32)
-        high_queue_server = torch.tensor([[1.5, 0.0, 1.0], [1.5, 0.0, 1.0]], dtype=torch.float32)
+        low_queue_term = torch.tensor([0.1, 0.1], dtype=torch.float32)
+        high_queue_term = torch.tensor([1.5, 1.5], dtype=torch.float32)
         violating_loss = trainer._compute_monotonic_offloading_loss(
             taskwise_gap,
-            low_queue_server,
+            low_queue_term,
             violating_policy_mean,
             effective_monotonic_coeff=1e-2,
         )
         violating_loss_high_queue = trainer._compute_monotonic_offloading_loss(
             taskwise_gap,
-            high_queue_server,
+            high_queue_term,
             violating_policy_mean,
             effective_monotonic_coeff=1e-2,
         )
@@ -239,7 +239,7 @@ class Task6TrainingPipelineTests(unittest.TestCase):
         monotone_policy_mean[:, 2, 2] = 6.0
         monotone_loss = trainer._compute_monotonic_offloading_loss(
             taskwise_gap,
-            low_queue_server,
+            low_queue_term,
             monotone_policy_mean,
             effective_monotonic_coeff=1e-2,
         )

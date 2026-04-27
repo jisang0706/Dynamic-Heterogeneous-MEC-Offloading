@@ -197,6 +197,8 @@ class TrainingConfig:
     local_reward_weight: float = 0.6
     shared_congestion_delta_coeff: float = 50.0
     shared_congestion_queue_coeff: float = 10.0
+    shared_congestion_delta_reference: float = 10.0
+    shared_congestion_queue_reference: float = 20.0
     l_i_coeff: float = 5e-5
     l_i_warmup_updates: int = 100
     l_d_coeff: float = 1e-3
@@ -204,6 +206,7 @@ class TrainingConfig:
     monotonic_offloading_coeff_final: float = 5e-4
     monotonic_decay_start_fraction: float = 0.6
     monotonic_decay_end_fraction: float = 1.0
+    monotonic_queue_reference: float = 20.0
     monotonic_load_margin: float = 0.1
     monotonic_offload_margin: float = 0.0
     lambda_var: float = 1e-5
@@ -289,6 +292,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-reward-weight", type=float, default=0.6)
     parser.add_argument("--shared-congestion-delta-coeff", type=float, default=50.0)
     parser.add_argument("--shared-congestion-queue-coeff", type=float, default=10.0)
+    parser.add_argument("--shared-congestion-delta-reference", type=float, default=10.0)
+    parser.add_argument("--shared-congestion-queue-reference", type=float, default=20.0)
     parser.add_argument("--l-i-coeff", type=float, default=5e-5)
     parser.add_argument("--l-i-warmup-updates", type=int, default=100)
     parser.add_argument("--l-d-coeff", type=float, default=1e-3)
@@ -296,6 +301,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--monotonic-offloading-coeff-final", type=float, default=5e-4)
     parser.add_argument("--monotonic-decay-start-fraction", type=float, default=0.6)
     parser.add_argument("--monotonic-decay-end-fraction", type=float, default=1.0)
+    parser.add_argument("--monotonic-queue-reference", type=float, default=20.0)
     parser.add_argument("--monotonic-load-margin", type=float, default=0.1)
     parser.add_argument("--monotonic-offload-margin", type=float, default=0.0)
     parser.add_argument("--lambda-var", type=float, default=1e-5)
@@ -364,6 +370,8 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         local_reward_weight=args.local_reward_weight,
         shared_congestion_delta_coeff=args.shared_congestion_delta_coeff,
         shared_congestion_queue_coeff=args.shared_congestion_queue_coeff,
+        shared_congestion_delta_reference=args.shared_congestion_delta_reference,
+        shared_congestion_queue_reference=args.shared_congestion_queue_reference,
         l_i_coeff=args.l_i_coeff,
         l_i_warmup_updates=args.l_i_warmup_updates,
         l_d_coeff=args.l_d_coeff,
@@ -371,6 +379,7 @@ def build_config_from_args(argv: Sequence[str] | None = None) -> ExperimentConfi
         monotonic_offloading_coeff_final=args.monotonic_offloading_coeff_final,
         monotonic_decay_start_fraction=args.monotonic_decay_start_fraction,
         monotonic_decay_end_fraction=args.monotonic_decay_end_fraction,
+        monotonic_queue_reference=args.monotonic_queue_reference,
         monotonic_load_margin=args.monotonic_load_margin,
         monotonic_offload_margin=args.monotonic_offload_margin,
         lambda_var=args.lambda_var,
@@ -423,6 +432,12 @@ def build_config_from_dict(payload: dict[str, Any]) -> ExperimentConfig:
         training_payload["shared_congestion_delta_coeff"] = 0.0
     if "shared_congestion_queue_coeff" not in training_payload:
         training_payload["shared_congestion_queue_coeff"] = 0.0
+    if "shared_congestion_delta_reference" not in training_payload:
+        training_payload["shared_congestion_delta_reference"] = float(TrainingConfig.shared_congestion_delta_reference)
+    if "shared_congestion_queue_reference" not in training_payload:
+        training_payload["shared_congestion_queue_reference"] = float(TrainingConfig.shared_congestion_queue_reference)
+    if "monotonic_queue_reference" not in training_payload:
+        training_payload["monotonic_queue_reference"] = float(TrainingConfig.monotonic_queue_reference)
 
     for key in ("task_size_range_mb", "task_density_range_gcycles_per_mb", "task_deadline_range_s"):
         if key in environment_payload:
