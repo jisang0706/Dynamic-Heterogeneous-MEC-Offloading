@@ -41,7 +41,7 @@ DISPLAY_NAME_MAP = {
 }
 
 PAPER_VARIANT_GROUPS = (
-    ("A9", "A9_NOROLE", "B3", "A1"),
+    ("A9", "A9_NOROLE"),
     ("B1",),
     ("QAG",),
 )
@@ -290,11 +290,23 @@ def _set_bar_ticks(axis: Any, x: np.ndarray, labels: list[str], *, num_items: in
 
 
 def _draw_wave_break(axis: Any, *, at_top: bool) -> None:
-    x = np.linspace(-0.02, 1.02, 160)
     baseline = 1.0 if at_top else 0.0
-    amplitude = 0.012
-    y = baseline + amplitude * np.sin(np.linspace(0.0, 6.0 * np.pi, x.size))
-    axis.plot(x, y, transform=axis.transAxes, color="black", linewidth=1.0, clip_on=False)
+    amplitude = 0.010
+    width = 0.055
+    centers = (0.06, 0.94)
+    t = np.linspace(0.0, 1.0, 80)
+    for center in centers:
+        x = center + (t - 0.5) * width
+        y = baseline + amplitude * np.sin(2.0 * np.pi * t)
+        axis.plot(
+            x,
+            y,
+            transform=axis.transAxes,
+            color="black",
+            linewidth=1.2,
+            solid_capstyle="round",
+            clip_on=False,
+        )
 
 
 def _plot_metric_bars(
