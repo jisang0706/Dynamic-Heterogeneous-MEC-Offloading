@@ -87,6 +87,17 @@ python -m src.visualize --output-root . --protocol-stage core
 python -m src.visualize --output-root . --protocol-stage scale
 ```
 
+Manual rerun after `paper_run.py` stage execution:
+
+```bash
+python -m src.visualize --output-root /path/to/workspace/core --protocol-stage core
+python -m src.visualize --output-root /path/to/workspace/scale --protocol-stage scale --paper-only
+```
+
+When `paper_run_manifest.json` is present at the stage root, `src.visualize` reuses the
+same selected summary files that the automatic runner used, so manual rerenders match the
+auto-generated paper plots numerically.
+
 Generated artifacts:
 
 - `results/evaluation_*_summary.json`

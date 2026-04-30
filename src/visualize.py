@@ -10,7 +10,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.lines import Line2D
 
 DISPLAY_NAME_MAP = {
     "A1": "RC-P-GCN-MAPPO",
@@ -75,6 +74,50 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _resolve_manifest_path(manifest_path: Path, raw_path: str) -> Path:
+    candidate = Path(raw_path)
+    if candidate.is_absolute() or candidate.exists():
+        return candidate
+    manifest_relative = manifest_path.parent / candidate
+    if manifest_relative.exists():
+        return manifest_relative
+    return candidate
+
+
+def _summary_files_from_manifest(manifest_path: Path) -> list[Path]:
+    try:
+        manifest = _load_json(manifest_path)
+    except json.JSONDecodeError:
+        return []
+
+    summary_files: list[Path] = []
+    for run in manifest.get("runs", []):
+        raw_path = run.get("summary_path")
+        if not raw_path:
+            continue
+        summary_path = _resolve_manifest_path(manifest_path, str(raw_path))
+        if summary_path.exists():
+            summary_files.append(summary_path)
+    return summary_files
+
+
+def _discover_manifest_summary_files(results_dir: Path) -> list[Path]:
+    direct_manifest = results_dir / "paper_run_manifest.json"
+    manifests = [direct_manifest] if direct_manifest.exists() else sorted(results_dir.rglob("paper_run_manifest.json"))
+    if not manifests:
+        return []
+
+    summary_files: list[Path] = []
+    seen_paths: set[Path] = set()
+    for manifest_path in manifests:
+        for summary_path in _summary_files_from_manifest(manifest_path):
+            if summary_path in seen_paths:
+                continue
+            seen_paths.add(summary_path)
+            summary_files.append(summary_path)
+    return summary_files
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -286,28 +329,26 @@ def _set_bar_ticks(axis: Any, x: np.ndarray, labels: list[str], *, num_items: in
     axis.margins(x=0.02)
 
 
-def _draw_wave_break(fig: Any, axis_top: Any, axis_bottom: Any) -> None:
-    top_box = axis_top.get_position()
-    bottom_box = axis_bottom.get_position()
-    gap = max(top_box.y0 - bottom_box.y1, 1e-3)
-    y_center = bottom_box.y1 + gap * 0.5
-    amplitude = min(gap * 0.22, 0.006)
-    width = 0.020
-    t = np.linspace(0.0, 1.0, 80)
-    for x_center in (top_box.x0 + 0.02, top_box.x1 - 0.02):
-        x = x_center + (t - 0.5) * width
-        y = y_center + amplitude * np.sin(2.0 * np.pi * t)
-        fig.add_artist(
-            Line2D(
-                x,
-                y,
-                transform=fig.transFigure,
+def _draw_wave_break(axis_top: Any, axis_bottom: Any) -> None:
+    # Use compact zigzag break markers on the shared spine, which is the more
+    # conventional paper-style notation for a broken y-axis.
+    x_offsets = np.array([-1.2, -0.4, 0.4, 1.2], dtype=np.float32) * 0.012
+    y_offsets = np.array([1.0, -1.0, 1.0, -1.0], dtype=np.float32) * 0.018
+    marker_specs = (
+        (axis_top, 0.0),
+        (axis_bottom, 1.0),
+    )
+    for axis, y_anchor in marker_specs:
+        for x_anchor in (0.0, 1.0):
+            axis.plot(
+                x_anchor + x_offsets,
+                y_anchor + y_offsets,
+                transform=axis.transAxes,
                 color="black",
-                linewidth=1.1,
+                linewidth=1.0,
                 solid_capstyle="round",
                 clip_on=False,
             )
-        )
 
 
 def _plot_metric_bars(
@@ -420,7 +461,7 @@ def _plot_broken_metric_bars(
     axis_bottom.spines["top"].set_visible(False)
     axis_top.margins(y=0.03)
     axis_bottom.margins(y=0.08)
-    _draw_wave_break(fig, axis_top, axis_bottom)
+    _draw_wave_break(axis_top, axis_bottom)
 
     top_values: list[float | None] = [None] * len(means)
     bottom_values: list[float | None] = [float(value) for value in means]
@@ -438,29 +479,57 @@ def _plot_broken_metric_bars(
 def _canonical_summary_file(candidates: list[Path]) -> Path | None:
     if not candidates:
         return None
-    by_name = {path.name: path for path in candidates}
-    if "evaluation_selected_summary.json" in by_name:
-        return by_name["evaluation_selected_summary.json"]
-    if "evaluation_checkpoint_final_summary.json" in by_name:
-        return by_name["evaluation_checkpoint_final_summary.json"]
-    if len(candidates) == 1:
-        return candidates[0]
-    return sorted(candidates)[-1]
+    ranked: list[tuple[int, str, Path]] = []
+    for path in candidates:
+        try:
+            summary = _load_json(path)
+        except json.JSONDecodeError:
+            summary = {}
+        name = path.name.lower()
+        checkpoint = str(summary.get("checkpoint") or "").lower()
+        runner_kind = str(summary.get("runner_kind") or "").lower()
+        if summary.get("runner_selection") is not None:
+            priority = 0
+        elif runner_kind == "fixed":
+            priority = 1
+        elif name == "evaluation_checkpoint_final_summary.json" or checkpoint.endswith("checkpoint_final.pt"):
+            priority = 2
+        elif name == "evaluation_selected_summary.json":
+            priority = 0
+        else:
+            priority = 3
+        ranked.append((priority, str(path), path))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return ranked[0][2]
 
 
 def _canonicalize_summary_files(summary_files: list[Path]) -> list[Path]:
-    grouped: dict[Path, list[Path]] = {}
+    grouped: dict[str, list[Path]] = {}
     for path in summary_files:
-        grouped.setdefault(path.parent, []).append(path)
+        try:
+            summary = _load_json(path)
+        except json.JSONDecodeError:
+            summary = {}
+        results_dir = summary.get("results_dir")
+        group_key = str(results_dir) if results_dir else str(path.parent)
+        grouped.setdefault(group_key, []).append(path)
     canonical: list[Path] = []
-    for directory in sorted(grouped):
-        chosen = _canonical_summary_file(sorted(grouped[directory]))
+    for group_key in sorted(grouped):
+        chosen = _canonical_summary_file(sorted(grouped[group_key]))
         if chosen is not None:
             canonical.append(chosen)
     return canonical
 
 
+def resolve_evaluation_summary_files(results_dir: Path, summary_files: list[Path] | None = None) -> list[Path]:
+    resolved_files = discover_summary_files(results_dir) if summary_files is None else summary_files
+    return _canonicalize_summary_files([Path(path) for path in resolved_files])
+
+
 def discover_summary_files(results_dir: Path) -> list[Path]:
+    manifest_summary_files = _discover_manifest_summary_files(results_dir)
+    if manifest_summary_files:
+        return manifest_summary_files
     return sorted(results_dir.glob("evaluation_*_summary.json"))
 
 
@@ -470,8 +539,7 @@ def discover_trace_file(results_dir: Path) -> Path | None:
 
 
 def load_evaluation_summaries(results_dir: Path, summary_files: list[Path] | None = None) -> list[dict[str, Any]]:
-    resolved_files = discover_summary_files(results_dir) if summary_files is None else summary_files
-    resolved_files = _canonicalize_summary_files([Path(path) for path in resolved_files])
+    resolved_files = resolve_evaluation_summary_files(results_dir, summary_files=summary_files)
     return [_load_json(path) for path in resolved_files]
 
 
@@ -772,8 +840,8 @@ def plot_paper_main_comparison(summaries: list[dict[str, Any]], plots_dir: Path)
     cost_mean = [item["metrics"]["mean_task_processing_cost"]["mean"] or 0.0 for item in selected]
     cost_std = [item["metrics"]["mean_task_processing_cost"]["std"] or 0.0 for item in selected]
 
-    fig = plt.figure(figsize=(18.0, 4.8))
-    grid = fig.add_gridspec(1, 4, wspace=0.32)
+    fig = plt.figure(figsize=(13.5, 9.0))
+    grid = fig.add_gridspec(2, 2, wspace=0.26, hspace=0.36)
 
     axis_reward = fig.add_subplot(grid[0, 0])
     _plot_metric_bars(
@@ -801,7 +869,7 @@ def plot_paper_main_comparison(summaries: list[dict[str, Any]], plots_dir: Path)
         annotation_fontsize=annotation_fontsize,
     )
 
-    axis_queue = fig.add_subplot(grid[0, 2])
+    axis_queue = fig.add_subplot(grid[1, 0])
     _plot_metric_bars(
         axis_queue,
         x,
@@ -816,7 +884,7 @@ def plot_paper_main_comparison(summaries: list[dict[str, Any]], plots_dir: Path)
 
     _plot_broken_metric_bars(
         fig,
-        grid[0, 3],
+        grid[1, 1],
         x,
         labels,
         cost_mean,
@@ -1162,10 +1230,14 @@ def generate_plots(
     return generated
 
 
+def _default_results_dir(output_root: Path) -> Path:
+    return output_root if (output_root / "paper_run_manifest.json").exists() else output_root / "results"
+
+
 def main() -> None:
     args = build_parser().parse_args()
     output_root = args.output_root
-    results_dir = output_root / "results" if args.results_dir is None else args.results_dir
+    results_dir = _default_results_dir(output_root) if args.results_dir is None else args.results_dir
     plots_dir = results_dir / "plots" if args.plots_dir is None else args.plots_dir
     generated = generate_plots(
         output_root=output_root,
