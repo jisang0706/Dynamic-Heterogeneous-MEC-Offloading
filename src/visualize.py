@@ -39,6 +39,18 @@ DISPLAY_NAME_MAP = {
     "QAG": "QAG",
 }
 
+PAPER_VARIANT_ORDER = ("B3", "B1", "QAG")
+PAPER_LABEL_MAP = {
+    "B3": "P-GCN-MAPPO",
+    "B1": "MAPPO",
+    "QAG": "QAG",
+}
+PAPER_COLOR_MAP = {
+    "B3": "#4c72b0",
+    "B1": "#55a868",
+    "QAG": "#c44e52",
+}
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Visualize evaluation results and learning curves")
@@ -183,6 +195,40 @@ def _summary_display_label(summary: dict[str, Any], fallback_index: int) -> str:
     return _plot_label(raw_label)
 
 
+def _variant_identifier(item: dict[str, Any]) -> str:
+    raw_variant = item.get("variant_id")
+    if raw_variant is not None:
+        return str(raw_variant)
+    raw_label = item.get("label", "run")
+    return str(raw_label)
+
+
+def _paper_display_label(item: dict[str, Any]) -> str:
+    variant_id = _variant_identifier(item)
+    return PAPER_LABEL_MAP.get(variant_id, _display_label(variant_id))
+
+
+def _paper_color(item: dict[str, Any]) -> str:
+    return PAPER_COLOR_MAP.get(_variant_identifier(item), "#4c72b0")
+
+
+def _select_paper_variants(aggregated: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for variant_id in PAPER_VARIANT_ORDER:
+        candidates = [item for item in aggregated if _variant_identifier(item) == variant_id]
+        if not candidates:
+            continue
+        candidates.sort(
+            key=lambda item: (
+                0 if int(item.get("num_agents", -1)) == 5 else 1,
+                0 if item.get("protocol_stage") == "core" else 1,
+                -int(item.get("num_runs", 0)),
+            )
+        )
+        selected.append(candidates[0])
+    return selected
+
+
 def _comparison_width(num_items: int, *, min_width: float = 10.0, per_item: float = 1.8, max_width: float = 28.0) -> float:
     return float(min(max(min_width, num_items * per_item), max_width))
 
@@ -211,6 +257,140 @@ def _set_bar_ticks(axis: Any, x: np.ndarray, labels: list[str], *, num_items: in
     axis.set_xticks(x, labels)
     axis.tick_params(axis="x", labelsize=_comparison_tick_fontsize(num_items))
     axis.margins(x=0.02)
+
+
+def _draw_wave_break(axis: Any, *, at_top: bool) -> None:
+    x = np.linspace(-0.02, 1.02, 160)
+    baseline = 1.0 if at_top else 0.0
+    amplitude = 0.012
+    y = baseline + amplitude * np.sin(np.linspace(0.0, 6.0 * np.pi, x.size))
+    axis.plot(x, y, transform=axis.transAxes, color="black", linewidth=1.0, clip_on=False)
+
+
+def _plot_metric_bars(
+    axis: Any,
+    x: np.ndarray,
+    labels: list[str],
+    means: list[float],
+    stds: list[float],
+    colors: list[str],
+    *,
+    title: str,
+    ylabel: str,
+    annotation_fontsize: int,
+) -> Any:
+    bars = axis.bar(x, means, yerr=stds, color=colors, capsize=4)
+    axis.set_title(title)
+    axis.set_ylabel(ylabel)
+    _set_bar_ticks(axis, x, labels, num_items=len(labels))
+    axis.margins(y=0.08)
+    _annotate_bars(axis, bars, means, stds=stds, fontsize=annotation_fontsize)
+    return bars
+
+
+def _broken_axis_spec(
+    variant_ids: list[str],
+    means: list[float],
+    stds: list[float],
+) -> tuple[int, tuple[float, float], tuple[float, float]] | None:
+    if "QAG" not in variant_ids:
+        return None
+    qag_index = variant_ids.index("QAG")
+    qag_mean = float(means[qag_index])
+    qag_std = float(stds[qag_index])
+    other_bounds = [
+        float(mean + std)
+        for index, (mean, std) in enumerate(zip(means, stds))
+        if index != qag_index
+    ]
+    other_lows = [
+        float(mean - std)
+        for index, (mean, std) in enumerate(zip(means, stds))
+        if index != qag_index
+    ]
+    if not other_bounds or not other_lows:
+        return None
+
+    max_other = max(other_bounds)
+    qag_lower = qag_mean - qag_std
+    if qag_mean <= max_other * 2.5 or qag_lower <= max_other * 1.4:
+        return None
+
+    lower_span = max_other - min(other_lows)
+    lower_pad = max(lower_span * 0.12, max(abs(value) for value in means) * 0.02, 0.05)
+    bottom_upper = max_other + lower_pad
+    top_lower = bottom_upper + (qag_lower - bottom_upper) * 0.55
+    if top_lower <= bottom_upper:
+        return None
+
+    bottom_lower = min(0.0, min(other_lows) - lower_pad)
+    top_upper = qag_mean + qag_std + max(lower_pad, abs(qag_mean) * 0.05)
+    return qag_index, (bottom_lower, bottom_upper), (top_lower, top_upper)
+
+
+def _plot_broken_metric_bars(
+    fig: Any,
+    cell: Any,
+    x: np.ndarray,
+    labels: list[str],
+    means: list[float],
+    stds: list[float],
+    colors: list[str],
+    *,
+    title: str,
+    ylabel: str,
+    annotation_fontsize: int,
+    variant_ids: list[str],
+) -> None:
+    broken_axis = _broken_axis_spec(variant_ids, means, stds)
+    if broken_axis is None:
+        axis = fig.add_subplot(cell)
+        _plot_metric_bars(
+            axis,
+            x,
+            labels,
+            means,
+            stds,
+            colors,
+            title=title,
+            ylabel=ylabel,
+            annotation_fontsize=annotation_fontsize,
+        )
+        return
+
+    qag_index, bottom_ylim, top_ylim = broken_axis
+    subgrid = cell.subgridspec(2, 1, height_ratios=(1.0, 1.9), hspace=0.05)
+    axis_top = fig.add_subplot(subgrid[0, 0])
+    axis_bottom = fig.add_subplot(subgrid[1, 0], sharex=axis_top)
+
+    bars_top = axis_top.bar(x, means, yerr=stds, color=colors, capsize=4)
+    bars_bottom = axis_bottom.bar(x, means, yerr=stds, color=colors, capsize=4)
+
+    axis_top.set_ylim(*top_ylim)
+    axis_bottom.set_ylim(*bottom_ylim)
+    axis_top.set_title(title)
+    axis_bottom.set_ylabel(ylabel)
+    _set_bar_ticks(axis_bottom, x, labels, num_items=len(labels))
+    axis_top.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
+
+    axis_top.spines["bottom"].set_visible(False)
+    axis_bottom.spines["top"].set_visible(False)
+    axis_top.margins(y=0.03)
+    axis_bottom.margins(y=0.08)
+    _draw_wave_break(axis_top, at_top=False)
+    _draw_wave_break(axis_bottom, at_top=True)
+
+    top_values: list[float | None] = [None] * len(means)
+    bottom_values: list[float | None] = [float(value) for value in means]
+    top_stds: list[float | None] = [None] * len(stds)
+    bottom_stds: list[float | None] = [float(std) for std in stds]
+    top_values[qag_index] = float(means[qag_index])
+    top_stds[qag_index] = float(stds[qag_index])
+    bottom_values[qag_index] = None
+    bottom_stds[qag_index] = None
+
+    _annotate_bars(axis_top, bars_top, top_values, stds=top_stds, fontsize=annotation_fontsize)
+    _annotate_bars(axis_bottom, bars_bottom, bottom_values, stds=bottom_stds, fontsize=annotation_fontsize)
 
 
 def discover_summary_files(results_dir: Path) -> list[Path]:
@@ -441,6 +621,90 @@ def plot_seed_aggregation_comparison(summaries: list[dict[str, Any]], plots_dir:
     fig.tight_layout()
     output_path = plots_dir / "seed_aggregation_comparison.png"
     fig.savefig(output_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+def plot_paper_main_comparison(summaries: list[dict[str, Any]], plots_dir: Path) -> Path | None:
+    aggregated = aggregate_seed_summaries(summaries)
+    selected = _select_paper_variants(aggregated)
+    if len(selected) < 2:
+        return None
+
+    labels = [_paper_display_label(item) for item in selected]
+    colors = [_paper_color(item) for item in selected]
+    variant_ids = [_variant_identifier(item) for item in selected]
+    x = np.arange(len(selected))
+    num_items = len(selected)
+    annotation_fontsize = _comparison_annotation_fontsize(num_items)
+
+    reward_mean = [item["metrics"]["mean_episode_joint_reward"]["mean"] or 0.0 for item in selected]
+    reward_std = [item["metrics"]["mean_episode_joint_reward"]["std"] or 0.0 for item in selected]
+    timeout_mean = [item["metrics"]["mean_timeout_ratio"]["mean"] or 0.0 for item in selected]
+    timeout_std = [item["metrics"]["mean_timeout_ratio"]["std"] or 0.0 for item in selected]
+    queue_mean = [item["metrics"]["mean_edge_queue"]["mean"] or 0.0 for item in selected]
+    queue_std = [item["metrics"]["mean_edge_queue"]["std"] or 0.0 for item in selected]
+    cost_mean = [item["metrics"]["mean_task_processing_cost"]["mean"] or 0.0 for item in selected]
+    cost_std = [item["metrics"]["mean_task_processing_cost"]["std"] or 0.0 for item in selected]
+
+    fig = plt.figure(figsize=(11.5, 8.5))
+    grid = fig.add_gridspec(2, 2, hspace=0.36, wspace=0.28)
+
+    axis_reward = fig.add_subplot(grid[0, 0])
+    _plot_metric_bars(
+        axis_reward,
+        x,
+        labels,
+        reward_mean,
+        reward_std,
+        colors,
+        title="Mean Episode Joint Reward",
+        ylabel="Reward [a.u.]",
+        annotation_fontsize=annotation_fontsize,
+    )
+
+    axis_timeout = fig.add_subplot(grid[0, 1])
+    _plot_metric_bars(
+        axis_timeout,
+        x,
+        labels,
+        timeout_mean,
+        timeout_std,
+        colors,
+        title="Mean Timeout Ratio",
+        ylabel="Ratio [-]",
+        annotation_fontsize=annotation_fontsize,
+    )
+
+    axis_queue = fig.add_subplot(grid[1, 0])
+    _plot_metric_bars(
+        axis_queue,
+        x,
+        labels,
+        queue_mean,
+        queue_std,
+        colors,
+        title="Mean Edge Queue",
+        ylabel="Queue [Gcycles]",
+        annotation_fontsize=annotation_fontsize,
+    )
+
+    _plot_broken_metric_bars(
+        fig,
+        grid[1, 1],
+        x,
+        labels,
+        cost_mean,
+        cost_std,
+        colors,
+        title="Mean Task Cost",
+        ylabel="Normalized Cost [-]",
+        annotation_fontsize=annotation_fontsize,
+        variant_ids=variant_ids,
+    )
+
+    output_path = plots_dir / "paper_main_comparison.png"
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
     return output_path
 
@@ -742,6 +1006,7 @@ def generate_plots(
         plot_learning_curves(output_root, plots_dir),
         plot_summary_comparison(summaries, plots_dir),
         plot_seed_aggregation_comparison(summaries, plots_dir),
+        plot_paper_main_comparison(summaries, plots_dir),
         plot_identifiability_comparison(summaries, plots_dir),
         plot_posterior_uncertainty_comparison(summaries, plots_dir),
         plot_c1_decomposition(summaries, plots_dir),
