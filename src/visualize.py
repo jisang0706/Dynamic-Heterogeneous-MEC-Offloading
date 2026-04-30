@@ -23,6 +23,7 @@ DISPLAY_NAME_MAP = {
     "A7_100": "RC-P-GCN-MAPPO (D=100)",
     "A7_200": "RC-P-GCN-MAPPO (D=200)",
     "A8": "RC-P-GCN-MAPPO (+L_D)",
+    "A9": "P-GCN-MAPPO",
     "A9_NOROLE": "P-GCN-MAPPO (Indiv, No Role)",
     "B0": "Li et al. Exact",
     "B1": "MAPPO",
@@ -39,13 +40,23 @@ DISPLAY_NAME_MAP = {
     "QAG": "QAG",
 }
 
-PAPER_VARIANT_ORDER = ("B3", "B1", "QAG")
+PAPER_VARIANT_GROUPS = (
+    ("A9", "A9_NOROLE", "B3", "A1"),
+    ("B1",),
+    ("QAG",),
+)
 PAPER_LABEL_MAP = {
+    "A9": "P-GCN-MAPPO",
+    "A9_NOROLE": "P-GCN-MAPPO",
+    "A1": "P-GCN-MAPPO",
     "B3": "P-GCN-MAPPO",
     "B1": "MAPPO",
     "QAG": "QAG",
 }
 PAPER_COLOR_MAP = {
+    "A9": "#4c72b0",
+    "A9_NOROLE": "#4c72b0",
+    "A1": "#4c72b0",
     "B3": "#4c72b0",
     "B1": "#55a868",
     "QAG": "#c44e52",
@@ -61,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trace-file", type=Path, default=None)
     parser.add_argument("--timeline-agent", type=int, default=0)
     parser.add_argument("--protocol-stage", choices=("smoke", "core", "scale"), default=None)
+    parser.add_argument("--paper-only", action="store_true")
     return parser
 
 
@@ -212,20 +224,38 @@ def _paper_color(item: dict[str, Any]) -> str:
     return PAPER_COLOR_MAP.get(_variant_identifier(item), "#4c72b0")
 
 
+def _is_paper_variant(variant_id: str) -> bool:
+    return any(variant_id in group for group in PAPER_VARIANT_GROUPS)
+
+
+def _looks_like_paper_selection(aggregated: list[dict[str, Any]]) -> bool:
+    if not aggregated:
+        return False
+    variant_ids = {_variant_identifier(item) for item in aggregated}
+    if not all(_is_paper_variant(variant_id) for variant_id in variant_ids):
+        return False
+    return (
+        any(variant_id in PAPER_VARIANT_GROUPS[0] for variant_id in variant_ids)
+        and any(variant_id in PAPER_VARIANT_GROUPS[1] for variant_id in variant_ids)
+        and any(variant_id in PAPER_VARIANT_GROUPS[2] for variant_id in variant_ids)
+    )
+
+
 def _select_paper_variants(aggregated: list[dict[str, Any]]) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
-    for variant_id in PAPER_VARIANT_ORDER:
-        candidates = [item for item in aggregated if _variant_identifier(item) == variant_id]
-        if not candidates:
+    for variant_group in PAPER_VARIANT_GROUPS:
+        group_candidates = [item for item in aggregated if _variant_identifier(item) in variant_group]
+        if not group_candidates:
             continue
-        candidates.sort(
+        group_candidates.sort(
             key=lambda item: (
+                variant_group.index(_variant_identifier(item)),
                 0 if int(item.get("num_agents", -1)) == 5 else 1,
                 0 if item.get("protocol_stage") == "core" else 1,
                 -int(item.get("num_runs", 0)),
             )
         )
-        selected.append(candidates[0])
+        selected.append(group_candidates[0])
     return selected
 
 
@@ -313,7 +343,7 @@ def _broken_axis_spec(
 
     max_other = max(other_bounds)
     qag_lower = qag_mean - qag_std
-    if qag_mean <= max_other * 2.5 or qag_lower <= max_other * 1.4:
+    if qag_mean <= max_other * 1.6 or qag_lower <= max_other * 1.15:
         return None
 
     lower_span = max_other - min(other_lows)
@@ -546,35 +576,68 @@ def plot_summary_comparison(summaries: list[dict[str, Any]], plots_dir: Path) ->
     if not aggregated:
         return None
 
-    labels = [_plot_label(item["label"], num_agents=item["num_agents"]) for item in aggregated]
-    reward_mean = [item["metrics"]["mean_episode_joint_reward"]["mean"] or 0.0 for item in aggregated]
-    reward_std = [item["metrics"]["mean_episode_joint_reward"]["std"] or 0.0 for item in aggregated]
-    timeout_mean = [item["metrics"]["mean_timeout_ratio"]["mean"] or 0.0 for item in aggregated]
-    timeout_std = [item["metrics"]["mean_timeout_ratio"]["std"] or 0.0 for item in aggregated]
-    cost_mean = [item["metrics"]["mean_task_processing_cost"]["mean"] or 0.0 for item in aggregated]
-    cost_std = [item["metrics"]["mean_task_processing_cost"]["std"] or 0.0 for item in aggregated]
+    use_paper_style = _looks_like_paper_selection(aggregated)
+    selected = _select_paper_variants(aggregated) if use_paper_style else aggregated
+    labels = [
+        _paper_display_label(item) if use_paper_style else _plot_label(item["label"], num_agents=item["num_agents"])
+        for item in selected
+    ]
+    reward_mean = [item["metrics"]["mean_episode_joint_reward"]["mean"] or 0.0 for item in selected]
+    reward_std = [item["metrics"]["mean_episode_joint_reward"]["std"] or 0.0 for item in selected]
+    timeout_mean = [item["metrics"]["mean_timeout_ratio"]["mean"] or 0.0 for item in selected]
+    timeout_std = [item["metrics"]["mean_timeout_ratio"]["std"] or 0.0 for item in selected]
+    cost_mean = [item["metrics"]["mean_task_processing_cost"]["mean"] or 0.0 for item in selected]
+    cost_std = [item["metrics"]["mean_task_processing_cost"]["std"] or 0.0 for item in selected]
+    variant_ids = [_variant_identifier(item) for item in selected]
 
-    x = np.arange(len(aggregated))
-    num_items = len(aggregated)
+    x = np.arange(len(selected))
+    num_items = len(selected)
     annotation_fontsize = _comparison_annotation_fontsize(num_items)
-    fig, axes = plt.subplots(1, 3, figsize=(_comparison_width(num_items, min_width=14.0), 5.2))
-    reward_bars = axes[0].bar(x, reward_mean, yerr=reward_std, color="#c44e52", capsize=4)
-    axes[0].set_title("Mean Episode Joint Reward")
-    axes[0].set_ylabel("Reward [a.u.]")
-    _set_bar_ticks(axes[0], x, labels, num_items=num_items)
-    _annotate_bars(axes[0], reward_bars, reward_mean, stds=reward_std, fontsize=annotation_fontsize)
+    reward_colors = [_paper_color(item) for item in selected] if use_paper_style else ["#c44e52"] * num_items
+    timeout_colors = [_paper_color(item) for item in selected] if use_paper_style else ["#4c72b0"] * num_items
+    cost_colors = [_paper_color(item) for item in selected] if use_paper_style else ["#55a868"] * num_items
 
-    timeout_bars = axes[1].bar(x, timeout_mean, yerr=timeout_std, color="#4c72b0", capsize=4)
-    axes[1].set_title("Mean Timeout Ratio")
-    axes[1].set_ylabel("Ratio [-]")
-    _set_bar_ticks(axes[1], x, labels, num_items=num_items)
-    _annotate_bars(axes[1], timeout_bars, timeout_mean, stds=timeout_std, fontsize=annotation_fontsize)
+    fig = plt.figure(figsize=(_comparison_width(num_items, min_width=14.0), 5.2))
+    grid = fig.add_gridspec(1, 3, wspace=0.28)
+    axis_reward = fig.add_subplot(grid[0, 0])
+    _plot_metric_bars(
+        axis_reward,
+        x,
+        labels,
+        reward_mean,
+        reward_std,
+        reward_colors,
+        title="Mean Episode Joint Reward",
+        ylabel="Reward [a.u.]",
+        annotation_fontsize=annotation_fontsize,
+    )
 
-    cost_bars = axes[2].bar(x, cost_mean, yerr=cost_std, color="#55a868", capsize=4)
-    axes[2].set_title("Mean Task Cost")
-    axes[2].set_ylabel("Normalized Cost [-]")
-    _set_bar_ticks(axes[2], x, labels, num_items=num_items)
-    _annotate_bars(axes[2], cost_bars, cost_mean, stds=cost_std, fontsize=annotation_fontsize)
+    axis_timeout = fig.add_subplot(grid[0, 1])
+    _plot_metric_bars(
+        axis_timeout,
+        x,
+        labels,
+        timeout_mean,
+        timeout_std,
+        timeout_colors,
+        title="Mean Timeout Ratio",
+        ylabel="Ratio [-]",
+        annotation_fontsize=annotation_fontsize,
+    )
+
+    _plot_broken_metric_bars(
+        fig,
+        grid[0, 2],
+        x,
+        labels,
+        cost_mean,
+        cost_std,
+        cost_colors,
+        title="Mean Task Cost",
+        ylabel="Normalized Cost [-]",
+        annotation_fontsize=annotation_fontsize,
+        variant_ids=variant_ids,
+    )
 
     fig.tight_layout()
     output_path = plots_dir / "evaluation_comparison.png"
@@ -588,35 +651,59 @@ def plot_seed_aggregation_comparison(summaries: list[dict[str, Any]], plots_dir:
     if not aggregated:
         return None
 
-    labels = [_plot_label(item["label"], num_agents=item["num_agents"]) for item in aggregated]
-    reward_mean = [item["metrics"]["mean_episode_joint_reward"]["mean"] or 0.0 for item in aggregated]
-    reward_std = [item["metrics"]["mean_episode_joint_reward"]["std"] or 0.0 for item in aggregated]
-    timeout_mean = [item["metrics"]["mean_timeout_ratio"]["mean"] or 0.0 for item in aggregated]
-    timeout_std = [item["metrics"]["mean_timeout_ratio"]["std"] or 0.0 for item in aggregated]
-    queue_mean = [item["metrics"]["mean_edge_queue"]["mean"] or 0.0 for item in aggregated]
-    queue_std = [item["metrics"]["mean_edge_queue"]["std"] or 0.0 for item in aggregated]
+    use_paper_style = _looks_like_paper_selection(aggregated)
+    selected = _select_paper_variants(aggregated) if use_paper_style else aggregated
+    labels = [
+        _paper_display_label(item) if use_paper_style else _plot_label(item["label"], num_agents=item["num_agents"])
+        for item in selected
+    ]
+    reward_mean = [item["metrics"]["mean_episode_joint_reward"]["mean"] or 0.0 for item in selected]
+    reward_std = [item["metrics"]["mean_episode_joint_reward"]["std"] or 0.0 for item in selected]
+    timeout_mean = [item["metrics"]["mean_timeout_ratio"]["mean"] or 0.0 for item in selected]
+    timeout_std = [item["metrics"]["mean_timeout_ratio"]["std"] or 0.0 for item in selected]
+    queue_mean = [item["metrics"]["mean_edge_queue"]["mean"] or 0.0 for item in selected]
+    queue_std = [item["metrics"]["mean_edge_queue"]["std"] or 0.0 for item in selected]
 
-    x = np.arange(len(aggregated))
-    num_items = len(aggregated)
+    x = np.arange(len(selected))
+    num_items = len(selected)
     annotation_fontsize = _comparison_annotation_fontsize(num_items)
+    reward_colors = [_paper_color(item) for item in selected] if use_paper_style else ["#c44e52"] * num_items
+    timeout_colors = [_paper_color(item) for item in selected] if use_paper_style else ["#4c72b0"] * num_items
+    queue_colors = [_paper_color(item) for item in selected] if use_paper_style else ["#55a868"] * num_items
     fig, axes = plt.subplots(1, 3, figsize=(_comparison_width(num_items, min_width=14.0), 5.2))
-    reward_bars = axes[0].bar(x, reward_mean, yerr=reward_std, color="#c44e52", capsize=4)
-    axes[0].set_title("Reward Mean ± Std")
-    axes[0].set_ylabel("Reward [a.u.]")
-    _set_bar_ticks(axes[0], x, labels, num_items=num_items)
-    _annotate_bars(axes[0], reward_bars, reward_mean, stds=reward_std, fontsize=annotation_fontsize)
-
-    timeout_bars = axes[1].bar(x, timeout_mean, yerr=timeout_std, color="#4c72b0", capsize=4)
-    axes[1].set_title("Timeout Mean ± Std")
-    axes[1].set_ylabel("Ratio [-]")
-    _set_bar_ticks(axes[1], x, labels, num_items=num_items)
-    _annotate_bars(axes[1], timeout_bars, timeout_mean, stds=timeout_std, fontsize=annotation_fontsize)
-
-    queue_bars = axes[2].bar(x, queue_mean, yerr=queue_std, color="#55a868", capsize=4)
-    axes[2].set_title("Edge Queue Mean ± Std")
-    axes[2].set_ylabel("Queue [Gcycles]")
-    _set_bar_ticks(axes[2], x, labels, num_items=num_items)
-    _annotate_bars(axes[2], queue_bars, queue_mean, stds=queue_std, fontsize=annotation_fontsize)
+    _plot_metric_bars(
+        axes[0],
+        x,
+        labels,
+        reward_mean,
+        reward_std,
+        reward_colors,
+        title="Reward Mean ± Std",
+        ylabel="Reward [a.u.]",
+        annotation_fontsize=annotation_fontsize,
+    )
+    _plot_metric_bars(
+        axes[1],
+        x,
+        labels,
+        timeout_mean,
+        timeout_std,
+        timeout_colors,
+        title="Timeout Mean ± Std",
+        ylabel="Ratio [-]",
+        annotation_fontsize=annotation_fontsize,
+    )
+    _plot_metric_bars(
+        axes[2],
+        x,
+        labels,
+        queue_mean,
+        queue_std,
+        queue_colors,
+        title="Edge Queue Mean ± Std",
+        ylabel="Queue [Gcycles]",
+        annotation_fontsize=annotation_fontsize,
+    )
 
     fig.tight_layout()
     output_path = plots_dir / "seed_aggregation_comparison.png"
@@ -992,6 +1079,7 @@ def generate_plots(
     trace_file: Path | None = None,
     timeline_agent: int = 0,
     protocol_stage: str | None = None,
+    paper_only: bool = False,
 ) -> list[Path]:
     plots_dir.mkdir(parents=True, exist_ok=True)
     summaries = filter_summaries_by_protocol_stage(
@@ -1002,6 +1090,12 @@ def generate_plots(
 
     generated = []
     write_seed_aggregation_report(summaries, results_dir)
+    if paper_only:
+        paper_plot = plot_paper_main_comparison(summaries, plots_dir)
+        if paper_plot is not None:
+            generated.append(paper_plot)
+        return generated
+
     for plot_path in (
         plot_learning_curves(output_root, plots_dir),
         plot_summary_comparison(summaries, plots_dir),
@@ -1043,6 +1137,7 @@ def main() -> None:
         trace_file=args.trace_file,
         timeline_agent=args.timeline_agent,
         protocol_stage=args.protocol_stage,
+        paper_only=args.paper_only,
     )
     print(f"generated_plots={len(generated)} plots_dir={plots_dir}")
     for path in generated:
