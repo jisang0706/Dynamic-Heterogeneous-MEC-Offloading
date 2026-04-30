@@ -10,6 +10,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 
 DISPLAY_NAME_MAP = {
     "A1": "RC-P-GCN-MAPPO",
@@ -41,23 +42,19 @@ DISPLAY_NAME_MAP = {
 }
 
 PAPER_VARIANT_GROUPS = (
-    ("A9", "A9_NOROLE"),
+    ("A9_NOROLE", "A9"),
     ("B1",),
     ("QAG",),
 )
 PAPER_LABEL_MAP = {
     "A9": "P-GCN-MAPPO",
     "A9_NOROLE": "P-GCN-MAPPO",
-    "A1": "P-GCN-MAPPO",
-    "B3": "P-GCN-MAPPO",
     "B1": "MAPPO",
     "QAG": "QAG",
 }
 PAPER_COLOR_MAP = {
     "A9": "#4c72b0",
     "A9_NOROLE": "#4c72b0",
-    "A1": "#4c72b0",
-    "B3": "#4c72b0",
     "B1": "#55a868",
     "QAG": "#c44e52",
 }
@@ -289,23 +286,27 @@ def _set_bar_ticks(axis: Any, x: np.ndarray, labels: list[str], *, num_items: in
     axis.margins(x=0.02)
 
 
-def _draw_wave_break(axis: Any, *, at_top: bool) -> None:
-    baseline = 1.0 if at_top else 0.0
-    amplitude = 0.010
-    width = 0.055
-    centers = (0.06, 0.94)
+def _draw_wave_break(fig: Any, axis_top: Any, axis_bottom: Any) -> None:
+    top_box = axis_top.get_position()
+    bottom_box = axis_bottom.get_position()
+    gap = max(top_box.y0 - bottom_box.y1, 1e-3)
+    y_center = bottom_box.y1 + gap * 0.5
+    amplitude = min(gap * 0.22, 0.006)
+    width = 0.020
     t = np.linspace(0.0, 1.0, 80)
-    for center in centers:
-        x = center + (t - 0.5) * width
-        y = baseline + amplitude * np.sin(2.0 * np.pi * t)
-        axis.plot(
-            x,
-            y,
-            transform=axis.transAxes,
-            color="black",
-            linewidth=1.2,
-            solid_capstyle="round",
-            clip_on=False,
+    for x_center in (top_box.x0 + 0.02, top_box.x1 - 0.02):
+        x = x_center + (t - 0.5) * width
+        y = y_center + amplitude * np.sin(2.0 * np.pi * t)
+        fig.add_artist(
+            Line2D(
+                x,
+                y,
+                transform=fig.transFigure,
+                color="black",
+                linewidth=1.1,
+                solid_capstyle="round",
+                clip_on=False,
+            )
         )
 
 
@@ -401,7 +402,7 @@ def _plot_broken_metric_bars(
         return
 
     qag_index, bottom_ylim, top_ylim = broken_axis
-    subgrid = cell.subgridspec(2, 1, height_ratios=(1.0, 1.9), hspace=0.05)
+    subgrid = cell.subgridspec(2, 1, height_ratios=(1.0, 1.9), hspace=0.10)
     axis_top = fig.add_subplot(subgrid[0, 0])
     axis_bottom = fig.add_subplot(subgrid[1, 0], sharex=axis_top)
 
@@ -419,8 +420,7 @@ def _plot_broken_metric_bars(
     axis_bottom.spines["top"].set_visible(False)
     axis_top.margins(y=0.03)
     axis_bottom.margins(y=0.08)
-    _draw_wave_break(axis_top, at_top=False)
-    _draw_wave_break(axis_bottom, at_top=True)
+    _draw_wave_break(fig, axis_top, axis_bottom)
 
     top_values: list[float | None] = [None] * len(means)
     bottom_values: list[float | None] = [float(value) for value in means]
@@ -435,6 +435,31 @@ def _plot_broken_metric_bars(
     _annotate_bars(axis_bottom, bars_bottom, bottom_values, stds=bottom_stds, fontsize=annotation_fontsize)
 
 
+def _canonical_summary_file(candidates: list[Path]) -> Path | None:
+    if not candidates:
+        return None
+    by_name = {path.name: path for path in candidates}
+    if "evaluation_selected_summary.json" in by_name:
+        return by_name["evaluation_selected_summary.json"]
+    if "evaluation_checkpoint_final_summary.json" in by_name:
+        return by_name["evaluation_checkpoint_final_summary.json"]
+    if len(candidates) == 1:
+        return candidates[0]
+    return sorted(candidates)[-1]
+
+
+def _canonicalize_summary_files(summary_files: list[Path]) -> list[Path]:
+    grouped: dict[Path, list[Path]] = {}
+    for path in summary_files:
+        grouped.setdefault(path.parent, []).append(path)
+    canonical: list[Path] = []
+    for directory in sorted(grouped):
+        chosen = _canonical_summary_file(sorted(grouped[directory]))
+        if chosen is not None:
+            canonical.append(chosen)
+    return canonical
+
+
 def discover_summary_files(results_dir: Path) -> list[Path]:
     return sorted(results_dir.glob("evaluation_*_summary.json"))
 
@@ -446,6 +471,7 @@ def discover_trace_file(results_dir: Path) -> Path | None:
 
 def load_evaluation_summaries(results_dir: Path, summary_files: list[Path] | None = None) -> list[dict[str, Any]]:
     resolved_files = discover_summary_files(results_dir) if summary_files is None else summary_files
+    resolved_files = _canonicalize_summary_files([Path(path) for path in resolved_files])
     return [_load_json(path) for path in resolved_files]
 
 
@@ -727,7 +753,7 @@ def plot_seed_aggregation_comparison(summaries: list[dict[str, Any]], plots_dir:
 def plot_paper_main_comparison(summaries: list[dict[str, Any]], plots_dir: Path) -> Path | None:
     aggregated = aggregate_seed_summaries(summaries)
     selected = _select_paper_variants(aggregated)
-    if len(selected) < 2:
+    if len(selected) != len(PAPER_VARIANT_GROUPS):
         return None
 
     labels = [_paper_display_label(item) for item in selected]
@@ -746,8 +772,8 @@ def plot_paper_main_comparison(summaries: list[dict[str, Any]], plots_dir: Path)
     cost_mean = [item["metrics"]["mean_task_processing_cost"]["mean"] or 0.0 for item in selected]
     cost_std = [item["metrics"]["mean_task_processing_cost"]["std"] or 0.0 for item in selected]
 
-    fig = plt.figure(figsize=(11.5, 8.5))
-    grid = fig.add_gridspec(2, 2, hspace=0.36, wspace=0.28)
+    fig = plt.figure(figsize=(18.0, 4.8))
+    grid = fig.add_gridspec(1, 4, wspace=0.32)
 
     axis_reward = fig.add_subplot(grid[0, 0])
     _plot_metric_bars(
@@ -775,7 +801,7 @@ def plot_paper_main_comparison(summaries: list[dict[str, Any]], plots_dir: Path)
         annotation_fontsize=annotation_fontsize,
     )
 
-    axis_queue = fig.add_subplot(grid[1, 0])
+    axis_queue = fig.add_subplot(grid[0, 2])
     _plot_metric_bars(
         axis_queue,
         x,
@@ -790,7 +816,7 @@ def plot_paper_main_comparison(summaries: list[dict[str, Any]], plots_dir: Path)
 
     _plot_broken_metric_bars(
         fig,
-        grid[1, 1],
+        grid[0, 3],
         x,
         labels,
         cost_mean,
